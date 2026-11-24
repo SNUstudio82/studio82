@@ -2,6 +2,6 @@
   "name": "studio82",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node dev-server.js"
   }
 }

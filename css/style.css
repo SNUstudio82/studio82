@@ -28,22 +28,16 @@ svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-linecap:round;st
 .atlas-panel{position:absolute;right:0;bottom:calc(100% + 6px);width:var(--map);opacity:0;visibility:hidden;pointer-events:none;transition:opacity 260ms ease,visibility 260ms ease}
 .atlas-panel.is-open{opacity:1;visibility:visible;pointer-events:auto}
 .atlas-map{display:block;width:var(--map);height:var(--map);overflow:visible}
-.atlas-map .sheet-back,.atlas-map .sheet,.atlas-map .floor,.atlas-map .you-arrow,.atlas-map .you-core{stroke:none}
-.atlas-map .sheet-back{fill:#e4dcd0}
-.atlas-map .sheet{fill:#f4efe6}
-.atlas-map .contour{fill:none;stroke:rgba(92,80,66,.34);stroke-width:.75;stroke-linejoin:round;stroke-linecap:round}
-.atlas-map .pit{fill:var(--c);opacity:.22;stroke:rgba(72,62,52,.28);stroke-width:.7}
-.atlas-map .floor{fill:var(--c);opacity:.38}
-.atlas-map .entry{stroke:var(--c);stroke-width:1.1;stroke-linecap:round}
-.atlas-map .dot{fill:var(--c);stroke:#f7f3ec;stroke-width:1.15}
-.atlas-map .num{fill:#3a342c;font:600 10px Inter,Helvetica,Arial,sans-serif}
-.atlas-map .is-current .pit{opacity:.48}
-.atlas-map .is-current .floor{opacity:.62}
-.atlas-map .is-current .dot{stroke:#2c2926;stroke-width:1.5}
-.atlas-map .you-arrow{fill:#2a2926}
-.atlas-map .you-ring{fill:none;stroke:#f7f4ee;stroke-width:2.1}
-.atlas-map .you-core{fill:#2a2926}
-.atlas-map .out-label{fill:#5c564c;font:600 11px Inter,Helvetica,Arial,sans-serif}
+.atlas-map,.atlas-map *{stroke:none}
+.atlas-map .wash{fill:#f4efe6;opacity:.55}
+.atlas-map{cursor:pointer}
+.atlas-map .contour{fill:none;stroke:#8a8378;stroke-width:.65px;stroke-linecap:round;stroke-linejoin:round;opacity:.22;vector-effect:non-scaling-stroke}
+.atlas-map .contour.index{stroke:#6a645c;stroke-width:1px;opacity:.34}
+.atlas-map .you-arrow,.atlas-map .you-core{fill:#2a2926}
+.atlas-map .you-layer{fill:#2a2926}
+.atlas-map .you-layer-a{opacity:.28}
+.atlas-map .you-layer-b{opacity:.16}
+.atlas-map .you-layer-c{opacity:.08}
 #atlas-pin,#atlas-open{position:relative;z-index:1;display:grid;place-items:center;width:34px;height:34px;padding:8px;border:1px solid #24303645;border-radius:50%;background:#eaf1ee66;color:inherit;cursor:pointer;pointer-events:auto;-webkit-tap-highlight-color:transparent}
 #atlas-pin{position:absolute;top:2px;right:2px}
 #atlas-pin .pin-dot{fill:none}

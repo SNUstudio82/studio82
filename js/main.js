@@ -237,46 +237,6 @@
   eight.scale.setScalar(glyphScale);
   const outline = glyph.getSpacedPoints(112);
 
-  function makeCloudPlate(width, height) {
-    const canvas = document.createElement('canvas');
-    const cols = 720, rows = Math.max(2, Math.round(cols * height / width));
-    canvas.width = cols; canvas.height = rows;
-    const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(cols, rows);
-    const pixels = image.data;
-    const cx = (cols - 1) / 2, cy = (rows - 1) / 2;
-    const bodyW = cols * .98, bodyH = rows * .98;
-    const radius = Math.min(bodyW, bodyH) * .2;
-    const hx = bodyW / 2 - radius, hy = bodyH / 2 - radius;
-    const fade = Math.min(bodyW, bodyH) * .28;
-    const smooth = t => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const qx = Math.abs(x - cx) - hx, qy = Math.abs(y - cy) - hy;
-        const dist = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - radius;
-        const cover = smooth(smooth(-dist / fade));
-        const grain = (Math.random() - .5) * 7 * cover;
-        const tone = 245 + grain;
-        const i = (y * cols + x) * 4;
-        pixels[i] = tone;
-        pixels[i + 1] = Math.min(255, tone + 3);
-        pixels[i + 2] = Math.min(255, tone + 6);
-        pixels[i + 3] = Math.round(168 * cover);
-      }
-    }
-    ctx.putImageData(image, 0, 0);
-    const map = new T.CanvasTexture(canvas);
-    map.colorSpace = T.SRGBColorSpace;
-    map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    const material = new T.MeshBasicMaterial({
-      map, transparent: true, depthWrite: false, fog: false, toneMapped: false, side: T.DoubleSide
-    });
-    const plate = new T.Mesh(new T.PlaneGeometry(width, height), material);
-    plate.name = 'cloud-plate';
-    plate.renderOrder = 1;
-    return plate;
-  }
-
   // The transparent print carries only the letterforms, set in Pretendard Medium.
   const printHeight=2.10, printWidth=printHeight*2545/2460;
   const printMap=loader.load(asset('passage.png'));
@@ -286,13 +246,12 @@
   const printGeometry=new T.PlaneGeometry(printWidth,printHeight);
   const passage=new T.Group();
   passage.name='floating-passage';
-  const cloudPlate=makeCloudPlate(printWidth*1.7, printHeight*1.56);
   const front=new T.Mesh(printGeometry,printMaterial);
   const back=new T.Mesh(printGeometry,printMaterial);
   front.position.z=.012; back.position.z=-.012;
   back.rotation.y=Math.PI;
   front.renderOrder=back.renderOrder=2;
-  passage.add(cloudPlate,front,back);
+  passage.add(front,back);
   geometry.computeBoundingBox();
   const uprightHeight=(geometry.boundingBox.max.y-geometry.boundingBox.min.y)*glyphScale;
   passage.rotation.y=.20;
@@ -316,7 +275,7 @@
   const orbit = {yaw:.20,pitch:.075};
   let pitBlend = 0;
   let heading=.52, roll=-.13, hop=0, jumpSpeed=0, wobble=0, wobbleSpeed=0, lastLobe=0, impactDelay=0;
-  let mode='ground', airY=0, verticalSpeed=0, paused=false, homing=false;
+  let mode='ground', airY=0, verticalSpeed=0, paused=false, homing=false, homeStage='climb';
   const flight={yaw:0,pitch:0,bank:0,speed:0,takeoff:0};
   const previousAttitude=new T.Quaternion(), airAttitude=new T.Quaternion();
   const followPoint=new T.Vector3();
@@ -440,6 +399,11 @@
   let drag=null;
   window.addEventListener('keydown',e=>{
     if(e.isComposing||e.key==='Process') return;
+    if(e.code==='F5'||((e.ctrlKey||e.metaKey)&&e.code==='KeyR')){
+      e.preventDefault();
+      returnHome();
+      return;
+    }
     if(e.code==='KeyM' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !e.target?.closest?.('input,textarea,select,[contenteditable="true"]')){
       e.preventDefault();
       exhibition.togglePin();
@@ -508,33 +472,37 @@
     shadowMat.opacity=.88*Math.exp(-hop*2.2/glyphScale);
     return foot.y;
   }
-  function fly(dt,turn,climb){
+  function fly(dt,turn,climb,guide){
     const landing=mode==='landing';
+    const guided=!!guide;
     flight.takeoff=Math.max(0,flight.takeoff-dt);
-    const targetPitch=landing?-.17:climb*.55+.36*flight.takeoff/1.15;
-    flight.pitch+= (targetPitch-flight.pitch)*ease(3.5,dt);
+    const targetPitch=guided?(guide.drop?-.04:climb*.55+.1):landing?-.08:climb*.55+.36*flight.takeoff/1.15;
+    flight.pitch+= (targetPitch-flight.pitch)*ease(guided?2.2:3.5,dt);
     flight.bank+= (-turn*.85-flight.bank)*ease(4,dt);
-    flight.yaw=wrap(flight.yaw+Math.sin(flight.bank)*1.65*dt);
-    flight.speed+=((landing?1.25:6.9-.9*Math.sin(flight.pitch))-flight.speed)*ease(landing?1.6:1.2,dt);
-    const forwardSpeed=flight.speed*Math.cos(flight.pitch);
+    if(!guided) flight.yaw=wrap(flight.yaw+Math.sin(flight.bank)*1.65*dt);
+    if(!guided) flight.speed+=((landing?1.05:6.9-.9*Math.sin(flight.pitch))-flight.speed)*ease(landing?2.4:1.2,dt);
+    const forwardSpeed=flight.speed*Math.cos(Math.max(0,flight.pitch));
     velocity.set(-Math.sin(flight.yaw)*forwardSpeed,0,-Math.cos(flight.yaw)*forwardSpeed);
-    location.addScaledVector(velocity,dt);
+    if(!(guided&&guide.drop)) location.addScaledVector(velocity,dt);
     if(airY<groundAt(location.x,location.z)+1.55) exhibition.constrain(location, airY);
     location.y=groundAt(location.x,location.z,groundNormal);
-    const descent=T.MathUtils.clamp(1.1+(airY-location.y)*.55,1.1,5.8);
-    const targetVertical=landing?-descent:flight.speed*Math.sin(flight.pitch);
-    verticalSpeed+=(targetVertical-verticalSpeed)*ease(4,dt);
+    const dropGap=Math.max(0,airY-location.y);
+    const descent=landing?Math.min(2.35,.7+dropGap*.2):0;
+    const targetVertical=guided&&guide.drop?-guide.sink:guided&&guide.hold!=null?guide.hold:landing?-descent:flight.speed*Math.sin(flight.pitch);
+    verticalSpeed+=(targetVertical-verticalSpeed)*ease(guided?2.2:4,dt);
     airY+=verticalSpeed*dt;
 
     previousAttitude.copy(eight.quaternion);
     const lobe=pose()>.08?1:-1;
     const restingY=eight.position.y;
-    if(landing && airY<=restingY){
-      lastLobe=lobe;impactDelay=.16;wasMoving=true;wobbleSpeed=.65;
-      verticalSpeed=0; knock(1.7,lobe); setMode('ground');
+    if((landing||(guided&&guide.drop)) && airY<=restingY){
+      verticalSpeed=0; flight.speed=0; velocity.set(0,0,0);
+      if(!homing){lastLobe=lobe;impactDelay=.16;wasMoving=true;wobbleSpeed=.4;knock(1.1,lobe);}
+      else wobbleSpeed=.18;
+      setMode('ground');
       return;
     }
-    if(!landing){
+    if(!landing && !(guided&&guide.drop)){
       const launchBlend=1-flight.takeoff/1.15;
       const clearance=location.y+.68/groundNormal.y;
       const floor=T.MathUtils.lerp(restingY,Math.max(restingY,clearance),launchBlend);
@@ -552,15 +520,77 @@
   const veil=document.querySelector('#veil');
   const veilMist=veil.querySelector('.mist'), veilFill=veil.querySelector('.fill');
   let fogStart=0, fogPlaced=false;
-  function returnHome(){
-    if(homing) return;
-    const distance=Math.hypot(location.x,location.z);
-    const airborne=mode==='flying'||mode==='landing'||mode==='jumping';
-    if(distance<.15&&!airborne) return;
-    homing=true; fogPlaced=false; fogStart=performance.now();
-    clearInput(); velocity.set(0,0,0);
-    veil.hidden=false;
-    travelStatus.textContent='하얀 안개가 차오릅니다';
+  let homeTarget={x:0,z:0,settle:true}, hoverTime=0, arrival=null;
+  function flyTo(x,z,settleHome){
+    const dx=location.x-x, dz=location.z-z;
+    const distance=Math.hypot(dx,dz);
+    homeTarget={x,z,settle:!!settleHome};
+    arrival=null;
+    if(!homing){
+      if(distance<.45&&!settleHome) return;
+      clearInput(); velocity.set(0,0,0);
+      homing=true; homeStage='climb';
+      flight.yaw=distance<.25?orbit.yaw:Math.atan2(dx,dz);
+      flight.bank=0; flight.pitch=.42; flight.speed=2.2; flight.takeoff=1.15;
+      airY=eight.position.y; verticalSpeed=2.4;
+      hop=jumpSpeed=0;
+      setMode('flying');
+    }
+    travelStatus.textContent=settleHome?'이륙해서 처음 위치로 돌아갑니다':'이륙해서 그 위치로 이동합니다';
+  }
+  function returnHome(){ flyTo(0,0,true); }
+  function finishTravel(){
+    homing=false; hoverTime=0;
+    velocity.set(0,0,0); verticalSpeed=0; flight.speed=0;
+    const miss=Math.hypot(location.x-homeTarget.x,location.z-homeTarget.z);
+    if(miss>1.6){location.x=homeTarget.x;location.z=homeTarget.z;}
+    location.y=groundAt(location.x,location.z,groundNormal);
+    arrival={
+      x:homeTarget.x, z:homeTarget.z, pose:homeTarget.settle,
+      heading:homeTarget.settle?.52:flight.yaw,
+      roll:homeTarget.settle?-.13:roll,
+      yaw:homeTarget.settle?.20:orbit.yaw,
+      pitch:homeTarget.settle?.075:orbit.pitch
+    };
+    setMode('ground'); pose(); updateCoords();
+    travelStatus.textContent=homeTarget.settle?'처음 위치에 내려왔습니다':'그 위치에 내려왔습니다';
+  }
+  function stepHome(dt){
+    if(mode==='ground'){ finishTravel(); return; }
+    const dx=location.x-homeTarget.x, dz=location.z-homeTarget.z;
+    const distance=Math.hypot(dx,dz);
+    const altitude=airY-groundAt(location.x,location.z);
+    if(homeStage==='hover') hoverTime+=dt; else hoverTime=0;
+    if(homeStage==='climb'){
+      if(flight.takeoff<=.05&&altitude>6.2) homeStage=distance<3.2?'hover':'cruise';
+    }else if(homeStage==='cruise'&&distance<3.2&&flight.speed<2.6) homeStage='hover';
+    else if(homeStage==='hover'&&(hoverTime>1.5||(distance<.55&&flight.speed<.8))) homeStage='down';
+    if(homeStage!=='down'&&distance>.3){
+      const desired=Math.atan2(dx,dz);
+      flight.yaw+=wrap(desired-flight.yaw)*Math.min(1,dt*(distance<5?2.2:3.5));
+    }
+    flight.bank*=Math.max(0,1-dt*5);
+    let speedGoal=0, climb=0, guide=null;
+    if(homeStage==='climb'){
+      speedGoal=Math.min(2.8,Math.max(distance,1.2)); climb=1; guide={};
+    }else if(homeStage==='cruise'){
+      speedGoal=distance>22?6.2:distance>10?3.6:1.7;
+      climb=altitude<6?.4:altitude>8.6?-.25:0; guide={};
+    }else if(homeStage==='hover'){
+      speedGoal=0; guide={hold:altitude<5.6?.6:altitude>7.2?-.45:0};
+    }else{
+      speedGoal=0; guide={drop:true, sink:Math.min(2.15,.65+Math.max(0,altitude)*.16)};
+    }
+    flight.speed+=(speedGoal-flight.speed)*Math.min(1,dt*3);
+    if(homeStage==='hover'||homeStage==='down') flight.speed*=Math.max(0,1-dt*3.4);
+    fly(dt,0,climb,guide);
+    if(homeStage==='hover'||homeStage==='down'){
+      const pull=Math.min(1,dt*(homeStage==='down'?2.6:1.8));
+      location.x+=(homeTarget.x-location.x)*pull;
+      location.z+=(homeTarget.z-location.z)*pull;
+      velocity.set(0,0,0);
+    }
+    if(mode==='ground') finishTravel();
   }
   function updateHomeFog(now){
     if(!homing) return;
@@ -587,6 +617,7 @@
     veilFill.style.opacity=fill.toFixed(3);
   }
   function move(dt) {
+    if(arrival&&(held.size||pointerKeys.size)) arrival=null;
     let x=0,z=0;
     for(const key of new Set([...held,...pointerKeys.values()])){
       if(keyDir[key]){x+=keyDir[key][0];z+=keyDir[key][1];}
@@ -699,6 +730,7 @@
     airY=0;verticalSpeed=0;setMode('ground');
     pose();view(0,true);updateCoords();
   }
+  window.STUDIO_TRAVEL=(x,z)=>flyTo(x,z,false);
   document.querySelector('#home').addEventListener('click',returnHome);
   document.querySelector('#home-title').addEventListener('click',returnHome);
   function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();view(0,true);}
@@ -707,8 +739,27 @@
   renderer.setAnimationLoop(now=>{
     const elapsed=Math.min(Math.max((now-last)*.001,0),.07);last=now;
     const steps=Math.max(1,Math.ceil(elapsed/(1/90)));
-    if(!homing&&!paused&&!document.hidden) for(let i=0;i<steps;i++) move(elapsed/steps);
-    updateHomeFog(now);
+    if(!paused&&!document.hidden) for(let i=0;i<steps;i++){
+      if(homing) stepHome(elapsed/steps); else move(elapsed/steps);
+    }
+    if(arrival){
+      const k=Math.min(1,elapsed*2.2);
+      location.x+=(arrival.x-location.x)*k;
+      location.z+=(arrival.z-location.z)*k;
+      location.y=groundAt(location.x,location.z,groundNormal);
+      if(arrival.pose){
+        heading+=wrap(arrival.heading-heading)*k;
+        roll+=wrap(arrival.roll-roll)*k;
+        orbit.yaw+=wrap(arrival.yaw-orbit.yaw)*k;
+        orbit.pitch+=(arrival.pitch-orbit.pitch)*k;
+      }
+      if(Math.hypot(location.x-arrival.x,location.z-arrival.z)<.03&&(!arrival.pose||Math.abs(wrap(arrival.yaw-orbit.yaw))<.02)){
+        location.x=arrival.x; location.z=arrival.z;
+        if(arrival.pose){heading=arrival.heading;roll=arrival.roll;orbit.yaw=arrival.yaw;orbit.pitch=arrival.pitch;}
+        arrival=null;
+      }
+      pose();
+    }
     view(elapsed);if(now-lastUI>110){updateCoords();lastUI=now;}
     if(sceneReady && !introArmed){introArmed=true; exhibition.armIntro(now);}
     exhibition.sync(now, location.x, location.z, camera, held.size>0 || pointerKeys.size>0 || !!drag, document.hidden);

@@ -14,6 +14,7 @@
     rise: 2.55
   };
   const SKIRT = 1.15;
+  const LAND = 0.62;
   const SITES = [[0,-124],[-58,-96],[0,-58],[58,-96],[-40,-14],[40,-14],[0,57],[-66,52],[66,52],[-48,108],[48,108],[0,132]];
 
   function smooth(e0, e1, x) {
@@ -78,7 +79,7 @@
       for (let col = 0; col <= cols; col++) {
         const x = mix(e[0], e[1], col / cols), i = row * stride + col;
         heights[i] = landform(x, z, e);
-        verts.push(x, heights[i], z);
+        verts.push(x * LAND, heights[i], z * LAND);
         uv.push(x * 0.2, z * 0.2);
         if (row < rows && col < cols) indices.push(i, i + stride, i + 1, i + stride, i + stride + 1, i + 1);
       }
@@ -93,7 +94,7 @@
       g.computeBoundingSphere();
       return g;
     }
-    function localOf(x, z) { return [x - EIGHT.x, z - EIGHT.z]; }
+    function localOf(x, z) { return [(x - EIGHT.x) / LAND, (z - EIGHT.z) / LAND]; }
     function contains(x, z) {
       const [lx, lz] = localOf(x, z);
       if (lz < zMin || lz > zMax) return false;
@@ -151,7 +152,7 @@
         const [x, z, y] = rim[j], a = Math.atan2(z / 137, x / 84), depth = tiers[k];
         const flute = Math.sin(a * 43 + 1.8 * Math.sin(a * 17)) + 0.52 * Math.sin(91 * a + 0.8 * k);
         const pinch = k === 0 ? 1 : 1 - 0.0021 * depth + 0.034 * flute * (1 - Math.exp(-k));
-        cv.push(x * pinch, y - depth * (1 + 0.085 * Math.sin(a * 19) + 0.045 * flute), z * pinch);
+        cv.push(x * pinch * LAND, y - depth * (1 + 0.085 * Math.sin(a * 19) + 0.045 * flute), z * pinch * LAND);
         cu.push(j * 0.42, depth * 0.23);
         const color = new T.Color(shades[k]).multiplyScalar(1 + 0.08 * flute);
         cc.push(color.r, color.g, color.b);
@@ -190,10 +191,10 @@
         diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);`);
     };
     const waters = lakes.map(lake => {
-      const v = [0, waterLevel, lake.z], idx = [];
+      const v = [0, waterLevel, lake.z * LAND], idx = [];
       for (let i = 0; i < 180; i++) {
-        const a = i * Math.PI / 90, r = shoreRadius(lake, a) + 0.8;
-        v.push(Math.cos(a) * r, waterLevel, lake.z + Math.sin(a) * r);
+        const a = i * Math.PI / 90, r = (shoreRadius(lake, a) + 0.8) * LAND;
+        v.push(Math.cos(a) * r, waterLevel, lake.z * LAND + Math.sin(a) * r);
         idx.push(0, (i + 1) % 180 + 1, i + 1);
       }
       const water = new T.Mesh(makeGeometry(v, idx), waterMat);
@@ -206,7 +207,7 @@
     for (let row = 0; row <= rows; row += 4) {
       const z = zMin + row * rowH, e = bounds[row];
       for (const x of e) {
-        const wx = x + EIGHT.x, wz = z + EIGHT.z;
+        const wx = x * LAND + EIGHT.x, wz = z * LAND + EIGHT.z;
         if (wx < minX) minX = wx;
         if (wx > maxX) maxX = wx;
         if (wz < minZ) minZ = wz;
@@ -245,7 +246,7 @@
       return y;
     }
     const mounts = SITES.map(([lx, lz], index) => {
-      const x = lx + EIGHT.x, z = lz + EIGHT.z;
+      const x = EIGHT.x + lx * LAND, z = EIGHT.z + lz * LAND;
       return {id: index + 1, x, z, y: stood(lx, lz), yaw: 0};
     });
     EIGHT.mounts = mounts;
@@ -257,7 +258,7 @@
     const endingLake = root.createEndingLake(T, {
       group, asset, waterUnder,
       anchorX: EIGHT.x, anchorZ: EIGHT.z,
-      lakeZ: lakes[1].z, lakeR: lakes[1].r, waterLevel
+      lakeZ: lakes[1].z * LAND, lakeR: lakes[1].r * LAND, waterLevel
     });
     if (loader && asset) {
       loader.load(asset('work-labels.png'), sheet => {
@@ -276,7 +277,7 @@
           label.scale.set(1024 / pixelsPerUnit, 256 / pixelsPerUnit, 1);
           const lake = lz < 0 ? lakes[0] : lakes[1];
           const afloat = Math.hypot(lx, lz - lake.z) < 4;
-          const x = lx + (afloat ? 0 : 2.4), z = lz + (afloat ? 0 : 0.1);
+          const x = lx * LAND + (afloat ? 0 : 2.4), z = lz * LAND + (afloat ? 0 : 0.1);
           label.position.set(x, stood(lx, lz) + (afloat ? 2.15 : 2.45), z);
           group.add(label);
         });
@@ -292,19 +293,19 @@
     const right = [], left = [];
     for (let z = zMin; z <= zMax; z += 1.25) {
       const e = edges(z);
-      right.push([e[1], z]);
-      left.push([e[0], z]);
-      reach = Math.max(reach, Math.hypot(e[0], z), Math.hypot(e[1], z));
+      right.push([e[1] * LAND, z * LAND]);
+      left.push([e[0] * LAND, z * LAND]);
+      reach = Math.max(reach, Math.hypot(e[0], z) * LAND);
     }
     const tip = edges(zMax);
-    right.push([tip[1], zMax]);
-    left.push([tip[0], zMax]);
-    reach = Math.max(reach, Math.abs(zMin), Math.abs(zMax));
+    right.push([tip[1] * LAND, zMax * LAND]);
+    left.push([tip[0] * LAND, zMax * LAND]);
+    reach = Math.max(reach, Math.abs(zMin) * LAND, Math.abs(zMax) * LAND);
     const lakePaths = lakes.map(lake => {
       const ring = [];
       for (let i = 0; i < 96; i++) {
-        const a = i * Math.PI / 48, r = shoreRadius(lake, a);
-        ring.push([Math.cos(a) * r, lake.z + Math.sin(a) * r]);
+        const a = i * Math.PI / 48, r = shoreRadius(lake, a) * LAND;
+        ring.push([Math.cos(a) * r, lake.z * LAND + Math.sin(a) * r]);
       }
       return ringPath(ring);
     });
@@ -581,13 +582,26 @@
     };
 
     svg.replaceChildren();
+    const defs = el('defs', {});
+    const grad = el('radialGradient', {id: 'contour-soft', cx: '50%', cy: '50%', r: '52%'});
+    grad.appendChild(el('stop', {offset: '34%', 'stop-color': '#fff', 'stop-opacity': '1'}));
+    grad.appendChild(el('stop', {offset: '62%', 'stop-color': '#fff', 'stop-opacity': '0.55'}));
+    grad.appendChild(el('stop', {offset: '84%', 'stop-color': '#fff', 'stop-opacity': '0.22'}));
+    grad.appendChild(el('stop', {offset: '100%', 'stop-color': '#fff', 'stop-opacity': '0.04'}));
+    defs.appendChild(grad);
+    const mask = el('mask', {id: 'contour-fade', maskContentUnits: 'objectBoundingBox'});
+    mask.appendChild(el('rect', {x: '0', y: '0', width: '1', height: '1', fill: 'url(#contour-soft)'}));
+    defs.appendChild(mask);
+    svg.appendChild(defs);
     const relief = el('g', {id: 'atlas-relief'});
     svg.appendChild(relief);
     relief.appendChild(el('path', {class: 'island', d: island.outline, 'vector-effect': 'non-scaling-stroke'}));
     for (const d of island.lakes) relief.appendChild(el('path', {class: 'lake', d, 'vector-effect': 'non-scaling-stroke'}));
+    const contours = el('g', {mask: 'url(#contour-fade)'});
+    relief.appendChild(contours);
     const half = Math.ceil(island.reach);
     for (const line of traceContours(sampleHeight, anchorX, anchorZ, half, 2.4, 1.05)) {
-      relief.appendChild(el('path', {class: line.index ? 'contour index' : 'contour', d: line.d, 'vector-effect': 'non-scaling-stroke'}));
+      contours.appendChild(el('path', {class: line.index ? 'contour index' : 'contour', d: line.d, 'vector-effect': 'non-scaling-stroke'}));
     }
     const marks = el('g', {id: 'atlas-sites'});
     for (const site of island.sites) {
@@ -630,8 +644,14 @@
       you.setAttribute('transform', `translate(${(view / 2 + dx * scale).toFixed(2)} ${(view / 2 + dz * scale).toFixed(2)})`);
       island.sites.forEach((site, index) => {
         const node = marks.children[index];
-        node.setAttribute('x', (view / 2 + (site.x - anchorX) * scale).toFixed(2));
-        node.setAttribute('y', (view / 2 + (site.z - anchorZ) * scale).toFixed(2));
+        let ox = site.x - anchorX, oz = site.z - anchorZ;
+        const len = Math.hypot(ox, oz) || 1;
+        const t = len / Math.max(island.reach, 1);
+        const keep = 1 - Math.pow(Math.max(0, (t - 0.4) / 0.6), 1.1) * 0.28;
+        ox *= keep;
+        oz *= keep;
+        node.setAttribute('x', (view / 2 + ox * scale).toFixed(2));
+        node.setAttribute('y', (view / 2 + oz * scale).toFixed(2));
       });
       const deg = Math.atan2(latest.dirX, -latest.dirZ) * 180 / Math.PI;
       arrow.setAttribute('transform', `rotate(${deg.toFixed(2)})`);

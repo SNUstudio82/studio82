@@ -242,26 +242,7 @@
   eight.scale.setScalar(glyphScale);
   const outline = glyph.getSpacedPoints(112);
 
-  // The transparent print carries only the letterforms, set in Pretendard Medium.
-  const printHeight=2.10, printWidth=printHeight*2545/2460;
-  const printMap=loader.load(asset('passage.png'));
-  printMap.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
-  const printMaterial=new T.MeshBasicMaterial({map:printMap,color:0x000000,
-    transparent:true,alphaTest:.004,depthWrite:false,fog:false,toneMapped:false});
-  const printGeometry=new T.PlaneGeometry(printWidth,printHeight);
-  const passage=new T.Group();
-  passage.name='floating-passage';
-  const front=new T.Mesh(printGeometry,printMaterial);
-  const back=new T.Mesh(printGeometry,printMaterial);
-  front.position.z=.012; back.position.z=-.012;
-  back.rotation.y=Math.PI;
-  front.renderOrder=back.renderOrder=2;
-  passage.add(front,back);
-  geometry.computeBoundingBox();
-  const uprightHeight=(geometry.boundingBox.max.y-geometry.boundingBox.min.y)*glyphScale;
-  passage.rotation.y=.20;
-  passage.position.set(.31,groundAt(.31,1.55)+2*uprightHeight+printHeight/2,1.55);
-  scene.add(passage);
+  const printWidth=2.10*2545/2460;
 
   const stamp = document.createElement('canvas'); stamp.width = stamp.height = 128;
   const ink = stamp.getContext('2d'), gradient = ink.createRadialGradient(64,64,0,64,64,64);

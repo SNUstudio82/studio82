@@ -39,13 +39,24 @@
   </div>
   </div>
   <span id="travel-status" class="sr-only" role="status"></span>
-  <div class="position"><div class="coordinates" aria-label="현재 위치"><span>X <b id="posx">0.0</b></span><span>Z <b id="posz">0.0</b></span></div>
-    <button id="home" title="처음 위치로" aria-label="처음 위치로"><svg viewBox="0 0 24 24"><path d="M5 10a7 7 0 1 1 .6 5M5 5v5h5"/></svg></button>
+  <div class="dock">
+    <div id="atlas" class="atlas">
+      <div id="atlas-panel" class="atlas-panel" aria-hidden="true">
+        <svg id="atlas-svg" class="atlas-map" viewBox="0 0 216 216" aria-hidden="true"></svg>
+        <button type="button" id="atlas-pin" aria-pressed="false" aria-label="지도 고정" title="지도 고정 (M)"><svg viewBox="0 0 24 24"><circle class="pin-dot" cx="12" cy="12" r="3.1"/><path d="M12 4.5v3M12 16.5V19.5M4.5 12h3M16.5 12H19.5"/></svg></button>
+        <p class="sr-only">들판에 전시 공간 10곳이 있습니다. 지도의 위쪽은 북쪽입니다.</p>
+      </div>
+      <button type="button" id="atlas-open" aria-expanded="false" aria-controls="atlas-panel" aria-label="지도 열기" title="지도 열기 (M)"><svg viewBox="0 0 24 24"><path d="M4 7.5 9 5.5l6 2 5-2v11l-5 2-6-2-5 2z"/><path d="M9 5.5v11M15 7.5v11"/></svg></button>
+    </div>
+    <div class="position"><div class="coordinates" aria-label="현재 위치"><span>X <b id="posx">0.0</b></span><span>Z <b id="posz">0.0</b></span></div>
+      <button id="home" title="처음 위치로" aria-label="처음 위치로"><svg viewBox="0 0 24 24"><path d="M5 10a7 7 0 1 1 .6 5M5 5v5h5"/></svg></button>
+    </div>
   </div>
 </footer>
 <div id="veil" hidden aria-hidden="true"><div class="mist"></div><div class="fill"></div></div>
 </main>
 <script src="vendor/three.js"></script>
+<script src="js/exhibition.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

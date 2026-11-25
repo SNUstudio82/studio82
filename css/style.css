@@ -23,5 +23,37 @@ svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-linecap:round;st
 .actions kbd{font:12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace}
 .actions button:hover{background:#ffffffe0}.actions button:disabled{opacity:.5;cursor:default}
 .actions button:focus-visible{outline:2px solid #233340;outline-offset:3px}
+.dock{display:flex;flex-direction:column;align-items:flex-end;gap:8px;pointer-events:none}
+.atlas{--map:216px;position:relative;width:var(--map);display:flex;justify-content:flex-end;pointer-events:none}
+.atlas-panel{position:absolute;right:0;bottom:calc(100% + 6px);width:var(--map);opacity:0;visibility:hidden;pointer-events:none;transition:opacity 260ms ease,visibility 260ms ease}
+.atlas-panel.is-open{opacity:1;visibility:visible;pointer-events:auto}
+.atlas-map{display:block;width:var(--map);height:var(--map);overflow:visible}
+.atlas-map .sheet-back,.atlas-map .sheet,.atlas-map .floor,.atlas-map .you-arrow,.atlas-map .you-core{stroke:none}
+.atlas-map .sheet-back{fill:#e4dcd0}
+.atlas-map .sheet{fill:#f4efe6}
+.atlas-map .contour{fill:none;stroke:rgba(92,80,66,.34);stroke-width:.75;stroke-linejoin:round;stroke-linecap:round}
+.atlas-map .pit{fill:var(--c);opacity:.22;stroke:rgba(72,62,52,.28);stroke-width:.7}
+.atlas-map .floor{fill:var(--c);opacity:.38}
+.atlas-map .entry{stroke:var(--c);stroke-width:1.1;stroke-linecap:round}
+.atlas-map .dot{fill:var(--c);stroke:#f7f3ec;stroke-width:1.15}
+.atlas-map .num{fill:#3a342c;font:600 10px Inter,Helvetica,Arial,sans-serif}
+.atlas-map .is-current .pit{opacity:.48}
+.atlas-map .is-current .floor{opacity:.62}
+.atlas-map .is-current .dot{stroke:#2c2926;stroke-width:1.5}
+.atlas-map .you-arrow{fill:#2a2926}
+.atlas-map .you-ring{fill:none;stroke:#f7f4ee;stroke-width:2.1}
+.atlas-map .you-core{fill:#2a2926}
+.atlas-map .out-label{fill:#5c564c;font:600 11px Inter,Helvetica,Arial,sans-serif}
+#atlas-pin,#atlas-open{position:relative;z-index:1;display:grid;place-items:center;width:34px;height:34px;padding:8px;border:1px solid #24303645;border-radius:50%;background:#eaf1ee66;color:inherit;cursor:pointer;pointer-events:auto;-webkit-tap-highlight-color:transparent}
+#atlas-pin{position:absolute;top:2px;right:2px}
+#atlas-pin .pin-dot{fill:none}
+#atlas-pin[aria-pressed="true"]{background:#e7efe9}
+#atlas-pin[aria-pressed="true"] .pin-dot{fill:currentColor}
+.atlas.is-open #atlas-open{visibility:hidden;pointer-events:none}
+#atlas-pin:hover,#atlas-open:hover{background:#fff9}
+#atlas-pin:focus-visible,#atlas-open:focus-visible{outline:2px solid #233340;outline-offset:3px}
+@media(prefers-reduced-motion:reduce){.atlas-panel{transition:none}}
+@media(max-width:720px),(max-height:680px){.atlas{--map:150px}.dock{gap:6px}}
+@media(max-width:540px){footer{flex-wrap:wrap;row-gap:8px}.dock{margin-left:auto}.atlas-panel{bottom:calc(100% + 52px)}}
 @media(pointer:coarse){.controls{gap:7px;align-items:flex-end}.actions{flex-direction:column;gap:3px}.actions button{justify-content:center;min-height:38px;min-width:50px}.actions kbd{display:none}}
 @media(pointer:fine) and (max-width:720px){.desktop-guide i,.desktop-guide .mouse,.desktop-guide .mouse+span{display:none}.controls{gap:7px;flex-wrap:wrap}.actions{gap:3px}}

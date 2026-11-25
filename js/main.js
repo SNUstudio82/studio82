@@ -62,11 +62,23 @@
   granite.wrapS = granite.wrapT = T.RepeatWrapping;
   granite.colorSpace = T.SRGBColorSpace;
   granite.anisotropy = Math.min(8,renderer.capabilities.getMaxAnisotropy());
+  const carveUniforms = {
+    carveMask:{value:new T.DataTexture(new Uint8Array([0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255]), 2, 2, T.RGBAFormat)},
+    carveMin:{value:new T.Vector2(-1,-1)},
+    carveSize:{value:new T.Vector2(2,2)}
+  };
+  carveUniforms.carveMask.value.colorSpace = T.NoColorSpace;
+  carveUniforms.carveMask.value.magFilter = T.LinearFilter;
+  carveUniforms.carveMask.value.minFilter = T.LinearFilter;
+  carveUniforms.carveMask.value.wrapS = carveUniforms.carveMask.value.wrapT = T.ClampToEdgeWrapping;
+  carveUniforms.carveMask.value.generateMipmaps = false;
+  carveUniforms.carveMask.value.needsUpdate = true;
   const stoneMat = new T.MeshStandardMaterial({map:granite, roughness:.94, metalness:0, envMapIntensity:.13});
-  stoneMat.onBeforeCompile = shader => {
+  function compileGranite(shader, carve){
     shader.vertexShader = 'varying vec2 groundXZ;\n' + shader.vertexShader.replace('#include <worldpos_vertex>',
       '#include <worldpos_vertex>\ngroundXZ = (modelMatrix * vec4(transformed,1.)).xz;');
-    shader.fragmentShader = 'varying vec2 groundXZ;\n' + shader.fragmentShader.replace('#include <map_fragment>', `
+    let fragment = 'varying vec2 groundXZ;\n' + shader.fragmentShader;
+    let grain = `
       vec2 grid = groundXZ / vec2(2.4,1.24);
       float row = floor(grid.y);
       grid.x += mod(row,2.)*.5;
@@ -88,7 +100,18 @@
       float fade = 1.-smoothstep(.012,.08,aa);
       grains *= 1.-(.43*cut+.095*bevel)*fade;
       diffuseColor.rgb *= grains;
-    `).replace('#include <normal_fragment_maps>', `
+    `;
+    if(carve){
+      fragment = 'uniform sampler2D carveMask;\nuniform vec2 carveMin;\nuniform vec2 carveSize;\n' + fragment;
+      shader.uniforms.carveMask = carveUniforms.carveMask;
+      shader.uniforms.carveMin = carveUniforms.carveMin;
+      shader.uniforms.carveSize = carveUniforms.carveSize;
+      grain = `
+      vec2 carveUv = (groundXZ - carveMin) / carveSize;
+      if(carveUv.x>0.0 && carveUv.y>0.0 && carveUv.x<1.0 && carveUv.y<1.0 && texture2D(carveMask, carveUv).r>0.018) discard;
+      ` + grain;
+    }
+    shader.fragmentShader = fragment.replace('#include <map_fragment>', grain).replace('#include <normal_fragment_maps>', `
       #include <normal_fragment_maps>
       // A height gradient in world units keeps grain relief stable with zoom.
       vec3 dxView = dFdx(-vViewPosition), dyView = dFdy(-vViewPosition);
@@ -98,7 +121,16 @@
                         * sign(reliefDet)/max(abs(reliefDet),1.e-8);
       normal = normalize(normal - reliefSlope/max(1.,length(reliefSlope)/.68));
     `);
-  };
+  }
+  const compilePit = shader => compileGranite(shader, false);
+  stoneMat.onBeforeCompile = compilePit;
+  const pitMat = stoneMat.clone();
+  pitMat.onBeforeCompile = compilePit;
+  pitMat.vertexColors = true;
+  pitMat.polygonOffset = true;
+  pitMat.polygonOffsetFactor = -1;
+  pitMat.polygonOffsetUnits = -1;
+  stoneMat.onBeforeCompile = shader => compileGranite(shader, true);
   // Adjacent patches use the same elevation and normal at their shared edge.
   const fieldWidth = 96, divisions = 192, stride = divisions+1;
   const groundStep = fieldWidth/divisions;
@@ -155,7 +187,7 @@
   }
   scene.add(fields);
   // Interpolate the exact triangle under the player and camera.
-  function groundAt(x,z,normal){
+  function baseGround(x,z,normal){
     const gx=T.MathUtils.euclideanModulo(x+fieldWidth/2,fieldWidth)/groundStep;
     const gz=T.MathUtils.euclideanModulo(z+fieldWidth/2,fieldWidth)/groundStep;
     const ix=Math.min(divisions-1,Math.floor(gx)), iz=Math.min(divisions-1,Math.floor(gz));
@@ -167,6 +199,11 @@
     if(normal) normal.set(-dx,groundStep,-dz).normalize();
     return lower ? elevations[a]+fx*dx+fz*dz : elevations[c]+(fx-1)*dx+(fz-1)*dz;
   }
+  let sampleGround = baseGround;
+  function groundAt(x,z,normal){ return sampleGround(x,z,normal); }
+  const exhibition = createExhibition(T, baseGround, pitMat, carveUniforms);
+  sampleGround = exhibition.sample;
+  scene.add(exhibition.group);
   const sun = new T.DirectionalLight(0xfff0d9, 1.6);
   scene.add(sun, sun.target);
   sun.castShadow = true; sun.shadow.mapSize.set(1024,1024);
@@ -277,6 +314,7 @@
   const rimOffset=new T.Vector3();
   const groundNormal=new T.Vector3(), terrainTilt=new T.Quaternion(), shadowHeading=new T.Quaternion();
   const orbit = {yaw:.20,pitch:.075};
+  let pitBlend = 0;
   let heading=.52, roll=-.13, hop=0, jumpSpeed=0, wobble=0, wobbleSpeed=0, lastLobe=0, impactDelay=0;
   let mode='ground', airY=0, verticalSpeed=0, paused=false, homing=false;
   const flight={yaw:0,pitch:0,bank:0,speed:0,takeoff:0};
@@ -395,11 +433,19 @@
   jumpButton.addEventListener('click',jump);
   flightButton.addEventListener('click',toggleFlight);
   document.addEventListener('click',e=>{
+    if(e.target?.closest?.('#atlas')) return;
     if(e.detail>0&&e.target?.closest?.('button')) canvas.focus({preventScroll:true});
   });
   function clearInput(){held.clear(); pointerKeys.clear(); drag=null;}
   let drag=null;
   window.addEventListener('keydown',e=>{
+    if(e.isComposing||e.key==='Process') return;
+    if(e.code==='KeyM' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !e.target?.closest?.('input,textarea,select,[contenteditable="true"]')){
+      e.preventDefault();
+      exhibition.togglePin();
+      return;
+    }
+    if(e.target?.closest?.('#atlas')) return;
     if(e.metaKey||e.ctrlKey||e.altKey||e.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
     if(homing){
       if(e.code==='Space'||keyDir[e.code]||e.code==='ShiftLeft'||e.code==='ShiftRight'||e.code==='KeyF') e.preventDefault();
@@ -473,6 +519,7 @@
     const forwardSpeed=flight.speed*Math.cos(flight.pitch);
     velocity.set(-Math.sin(flight.yaw)*forwardSpeed,0,-Math.cos(flight.yaw)*forwardSpeed);
     location.addScaledVector(velocity,dt);
+    if(airY<groundAt(location.x,location.z)+1.55) exhibition.constrain(location, airY);
     location.y=groundAt(location.x,location.z,groundNormal);
     const descent=T.MathUtils.clamp(1.1+(airY-location.y)*.55,1.1,5.8);
     const targetVertical=landing?-descent:flight.speed*Math.sin(flight.pitch);
@@ -556,6 +603,7 @@
     velocity.lerp(desired,ease(x||z?4.5:6.8,dt));
     if(velocity.lengthSq()<.0001) velocity.set(0,0,0);
     const speed=velocity.length(); location.addScaledVector(velocity,dt);
+    exhibition.constrain(location, mode==='jumping'?airY:groundAt(location.x,location.z));
     location.y=groundAt(location.x,location.z,groundNormal);
     // Steer the wheel toward travel. A little sideways slip keeps the two holes visible.
     if(speed>.045){
@@ -609,7 +657,19 @@
     follow.lerp(followPoint,snap?1:ease(7.5,dt));
     const aspect=camera.aspect;
     const portraitDistance=1.62+printWidth/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2))*aspect*.86);
-    const radius=Math.max(7.6,portraitDistance);
+    const pitTarget=exhibition.interior(location.x,location.z);
+    pitBlend+=(pitTarget-pitBlend)*(snap?1:ease(3.2,dt));
+    const pit=(mode==='ground'||mode==='jumping')?pitBlend:pitBlend*.22;
+    let radius=Math.max(7.6,portraitDistance);
+    radius+=(Math.min(radius,3.65)-radius)*pit;
+    if(pit>.3){
+      const ux=Math.sin(orbit.yaw), uz=Math.cos(orbit.yaw);
+      for(let i=0;i<4;i++){
+        const dist=Math.cos(orbit.pitch)*radius;
+        if(groundAt(follow.x+ux*dist, follow.z+uz*dist)<location.y+.72) break;
+        radius*=.74;
+      }
+    }
     const horizontal=Math.cos(orbit.pitch)*radius;
     gaze.set(follow.x,follow.y+.87,follow.z);
     cameraGoal.set(follow.x+Math.sin(orbit.yaw)*horizontal,gaze.y+Math.sin(orbit.pitch)*radius,follow.z+Math.cos(orbit.yaw)*horizontal);
@@ -620,8 +680,12 @@
       const x=T.MathUtils.lerp(eight.position.x,camera.position.x,t);
       const z=T.MathUtils.lerp(eight.position.z,camera.position.z,t);
       const minEye=eight.position.y+(groundAt(x,z)+.11+.37*t-eight.position.y)/t;
-      camera.position.y=Math.max(camera.position.y,minEye);
+      if(minEye>camera.position.y){
+        const mild=Math.max(camera.position.y, groundAt(camera.position.x,camera.position.z)+.32);
+        camera.position.y=minEye+(mild-minEye)*pit;
+      }
     }
+    camera.position.y=Math.max(camera.position.y, groundAt(camera.position.x,camera.position.z)+.22);
     camera.lookAt(gaze); sky.position.copy(camera.position);
     fields.position.set(Math.round(location.x/fieldWidth)*fieldWidth,0,Math.round(location.z/fieldWidth)*fieldWidth);
     sun.position.copy(location).add(lightOffset);sun.target.position.copy(location);
@@ -639,13 +703,15 @@
   document.querySelector('#home-title').addEventListener('click',returnHome);
   function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();view(0,true);}
   window.addEventListener('resize',resize);resize();reset();
-  let last=performance.now();
+  let last=performance.now(), introArmed=false;
   renderer.setAnimationLoop(now=>{
     const elapsed=Math.min(Math.max((now-last)*.001,0),.07);last=now;
     const steps=Math.max(1,Math.ceil(elapsed/(1/90)));
     if(!homing&&!paused&&!document.hidden) for(let i=0;i<steps;i++) move(elapsed/steps);
     updateHomeFog(now);
     view(elapsed);if(now-lastUI>110){updateCoords();lastUI=now;}
+    if(sceneReady && !introArmed){introArmed=true; exhibition.armIntro(now);}
+    exhibition.sync(now, location.x, location.z, camera, held.size>0 || pointerKeys.size>0 || !!drag, document.hidden);
     renderer.render(scene,camera);
     if(sceneReady) canvas.classList.add('ready');
   });

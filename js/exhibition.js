@@ -250,6 +250,8 @@
       return {id: index + 1, x, z, y: stood(lx, lz), yaw: 0};
     });
     EIGHT.mounts = mounts;
+    const southLake = mounts[2], northLake = mounts[6];
+    const spawn = {x: (southLake.x + northLake.x) / 2, z: (southLake.z + northLake.z) / 2};
 
     const group = new T.Group();
     group.name = 'exhibition';
@@ -398,6 +400,7 @@
       group,
       eight: EIGHT,
       mounts,
+      spawn,
       sample,
       contains,
       interior() { return 0; },

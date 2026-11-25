@@ -1,5 +1,5 @@
-// One raised figure-eight of granite. The repeating field stays as it is;
-// this mound lives in world space and is not parented to that group.
+// An eight-shaped island for the exhibition ground. The repeating granite
+// field and the contour map stay; only this landform replaces the mound.
 (function (root) {
   'use strict';
 
@@ -14,6 +14,7 @@
     rise: 2.55
   };
   const SKIRT = 1.15;
+  const SITES = [[0,-124],[-58,-96],[0,-58],[58,-96],[-40,-14],[40,-14],[0,57],[-66,52],[66,52],[-48,108],[48,108],[0,132]];
 
   function smooth(e0, e1, x) {
     const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
@@ -24,7 +25,7 @@
     return t * t * t * (t * (t * 6 - 15) + 10);
   }
 
-  function createExhibition(T, baseGround, surfaceMat, carveUniforms) {
+  function createExhibition(T, baseGround, surfaceMat, carveUniforms, granite, loader, asset) {
     const cos = Math.cos(EIGHT.rotation);
     const sin = Math.sin(EIGHT.rotation);
     const outer = EIGHT.radius + EIGHT.slope;
@@ -47,105 +48,172 @@
       return 1 - smoother((d - EIGHT.radius) / EIGHT.slope);
     }
 
-    let deckA = 0, deckB = 0;
-    function prepareDeck() {
-      let sumA = 0, nA = 0, sumB = 0, nB = 0;
-      for (let i = 0; i < 28; i++) {
-        const a = i / 28 * Math.PI * 2;
-        const ring = EIGHT.radius * 0.62;
-        for (const sign of [1, -1]) {
-          const lx = Math.cos(a) * ring;
-          const lz = sign * EIGHT.gap + Math.sin(a) * ring;
-          const [x, z] = toWorld(lx, lz);
-          const y = baseGround(x, z);
-          if (sign > 0) { sumA += y; nA++; }
-          else { sumB += y; nB++; }
-        }
+    const zMin = -134, zMax = 141, rows = 320, cols = 164, rowH = (zMax - zMin) / rows;
+    const lakes = [{z: -58, r: 35}, {z: 57, r: 41}];
+    const waterLevel = -1;
+    const mix = T.MathUtils.lerp, clamp = T.MathUtils.clamp;
+    function edges(z) {
+      const a = Math.sqrt(Math.max(0, 76 * 76 - (z + 58) ** 2));
+      const b = Math.sqrt(Math.max(0, 84 * 84 - (z - 57) ** 2));
+      const width = Math.max(0.08, Math.max(a, b) + Math.max(10 - Math.abs(a - b), 0) ** 2 / 40);
+      const wobble = width / 85;
+      return [-width + wobble * (1.3 * Math.sin(z * 0.092) + 0.85 * Math.cos(z * 0.19)), width + wobble * (1.7 * Math.sin(z * 0.085 - 0.8) + 0.55 * Math.sin(z * 0.29))];
+    }
+    function shoreRadius(lake, angle) { return lake.r * (1 + 0.018 * Math.sin(3 * angle + 0.5) + 0.014 * Math.cos(5 * angle - 0.3)); }
+    function landform(x, z, bounds) {
+      const lake = z < 0 ? lakes[0] : lakes[1], angle = Math.atan2(z - lake.z, x);
+      const shore = Math.hypot(x, z - lake.z) - shoreRadius(lake, angle);
+      const margin = Math.min(x - bounds[0], bounds[1] - x, z - zMin, zMax - z);
+      const folds = Math.sin(x * 0.077 + 1.12 * Math.cos(z * 0.051)) + Math.sin(z * 0.113 + x * 0.046) * 0.65;
+      const grains = 0.17 * Math.cos(x * 0.91 + z * 0.44) * Math.sin(z * 0.95) + 0.34 * Math.sin(z * 0.37 + x * 0.28) * Math.cos(x * 0.42);
+      const hillside = 3.4 + 2.9 * folds + grains + (5.5 + 2 * Math.sin(z * 0.24)) * Math.exp(-(Math.max(0, margin - 1) ** 2) / 85);
+      const t = T.MathUtils.smoothstep(shore, 0, 12);
+      return shore < 0 ? -1 + Math.max(-3.7, shore * 0.29) : mix(-1 + shore * 0.27, hillside, t);
+    }
+    const bounds = [], stride = cols + 1, heights = new Float32Array((rows + 1) * stride);
+    const verts = [], indices = [], uv = [];
+    for (let row = 0; row <= rows; row++) {
+      const z = zMin + row * rowH, e = edges(z);
+      bounds.push(e);
+      for (let col = 0; col <= cols; col++) {
+        const x = mix(e[0], e[1], col / cols), i = row * stride + col;
+        heights[i] = landform(x, z, e);
+        verts.push(x, heights[i], z);
+        uv.push(x * 0.2, z * 0.2);
+        if (row < rows && col < cols) indices.push(i, i + stride, i + 1, i + stride, i + stride + 1, i + 1);
       }
-      deckA = sumA / nA;
-      deckB = sumB / nB;
     }
-    prepareDeck();
-
-    function deckAt(lz) {
-      const t = smooth(-EIGHT.gap, EIGHT.gap, lz);
-      return deckB + (deckA - deckB) * t;
+    function makeGeometry(v, idx, tex, colors) {
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(v, 3));
+      if (tex) g.setAttribute('uv', new T.Float32BufferAttribute(tex, 2));
+      if (colors) g.setAttribute('color', new T.Float32BufferAttribute(colors, 3));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      g.computeBoundingSphere();
+      return g;
     }
-    function heightAt(x, z) {
-      const [lx, lz] = toLocal(x, z);
-      const t = coverage(x, z);
-      const base = baseGround(x, z);
-      if (t <= 0) return base;
-      const localTop = base + EIGHT.rise;
-      const leveled = localTop + (deckAt(lz) + EIGHT.rise - localTop) * 0.42;
-      const top = Math.min(Math.max(leveled, base + EIGHT.rise * 0.9), base + EIGHT.rise * 1.22);
-      return base + (top - base) * t;
+    function localOf(x, z) { return [x - EIGHT.x, z - EIGHT.z]; }
+    function contains(x, z) {
+      const [lx, lz] = localOf(x, z);
+      if (lz < zMin || lz > zMax) return false;
+      const e = edges(lz);
+      return lx >= e[0] && lx <= e[1];
+    }
+    function surfaceLocal(x, z, normal) {
+      if (normal) normal.set(0, 1, 0);
+      const row = clamp(Math.floor((z - zMin) / rowH), 0, rows - 1);
+      const f = (z - zMin) / rowH - row;
+      const e = bounds[row], next = bounds[row + 1];
+      const left = mix(e[0], next[0], f), right = mix(e[1], next[1], f);
+      const col = clamp(Math.floor((x - left) / (right - left) * cols), 0, cols - 1);
+      const w = (e[1] - e[0]) / cols, v = (next[1] - next[0]) / cols;
+      const x0 = e[0] + col * w, x1 = next[0] + col * v;
+      const a = row * stride + col, b = a + stride, d = a + 1, c = b + 1;
+      const diagonal = mix(x0 + w, x1, f);
+      let gradX, gradZ, y;
+      if (x <= diagonal) {
+        gradX = (heights[d] - heights[a]) / w;
+        gradZ = (heights[b] - heights[a] - gradX * (x1 - x0)) / rowH;
+        y = heights[a] + (x - x0) * gradX + f * rowH * gradZ;
+      } else {
+        gradX = (heights[c] - heights[b]) / v;
+        gradZ = (heights[c] - heights[d] - gradX * (x1 + v - x0 - w)) / rowH;
+        y = heights[c] + (x - x1 - v) * gradX + (f - 1) * rowH * gradZ;
+      }
+      if (normal) normal.set(-gradX, 1, -gradZ).normalize();
+      return y;
     }
     function sample(x, z, normal) {
-      const h = heightAt(x, z);
-      if (normal) {
-        const e = 0.16;
-        normal.set(heightAt(x - e, z) - heightAt(x + e, z), 2 * e, heightAt(x, z - e) - heightAt(x, z + e)).normalize();
+      if (!contains(x, z)) {
+        if (normal) normal.set(0, 1, 0);
+        return -Infinity;
       }
-      return h;
+      const [lx, lz] = localOf(x, z);
+      return surfaceLocal(lx, lz, normal);
     }
 
-    const spanX = outer + SKIRT;
-    const spanZ = EIGHT.gap + outer + SKIRT;
-    const step = 0.4;
-    const cols = Math.ceil(spanX * 2 / step) + 1;
-    const rows = Math.ceil(spanZ * 2 / step) + 1;
-    const positions = [];
-    const colors = [];
-    const keep = [];
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (let j = 0; j < rows; j++) {
-      const lz = -spanZ + j * (spanZ * 2) / (rows - 1);
-      for (let i = 0; i < cols; i++) {
-        const lx = -spanX + i * (spanX * 2) / (cols - 1);
-        const [wx, wz] = toWorld(lx, lz);
-        const inside = dist8(lx, lz) < outer + SKIRT;
-        keep.push(inside);
-        const h = heightAt(wx, wz);
-        positions.push(wx, h, wz);
-        const lift = Math.min(1, Math.max(0, (h - baseGround(wx, wz)) / EIGHT.rise));
-        const light = 0.94 + lift * 0.06;
-        colors.push(light, light * 0.995, light * 0.985);
-        if (inside) {
-          if (wx < minX) minX = wx;
-          if (wx > maxX) maxX = wx;
-          if (wz < minZ) minZ = wz;
-          if (wz > maxZ) maxZ = wz;
-        }
-      }
-    }
-    const indices = [];
-    for (let j = 0; j < rows - 1; j++) {
-      for (let i = 0; i < cols - 1; i++) {
-        const a = j * cols + i;
-        if (!(keep[a] || keep[a + 1] || keep[a + cols] || keep[a + cols + 1])) continue;
-        indices.push(a, a + cols, a + 1, a + 1, a + cols, a + cols + 1);
-      }
-    }
-
-    const geometry = new T.BufferGeometry();
-    geometry.setAttribute('position', new T.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new T.Float32BufferAttribute(colors, 3));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    const nrm = geometry.attributes.normal;
-    const col = geometry.attributes.color;
-    for (let i = 0; i < nrm.count; i++) {
-      const shade = 0.86 + 0.14 * Math.max(0, nrm.getY(i));
-      col.setXYZ(i, col.getX(i) * shade, col.getY(i) * shade, col.getZ(i) * shade);
-    }
-    geometry.computeBoundingSphere();
-    const terrain = new T.Mesh(geometry, surfaceMat);
+    const landMat = surfaceMat.clone();
+    landMat.vertexColors = false;
+    const terrain = new T.Mesh(makeGeometry(verts, indices, uv), landMat);
     terrain.name = 'exhibition-ground';
     terrain.receiveShadow = true;
     terrain.renderOrder = 1;
 
-    const texW = 384, texH = 384, pad = 2;
+    const rim = [];
+    for (let j = 0; j <= rows; j++) rim.push([bounds[j][1], zMin + j * rowH, heights[j * stride + cols]]);
+    for (let j = rows; j >= 0; j--) rim.push([bounds[j][0], zMin + j * rowH, heights[j * stride]]);
+    const cv = [], ci = [], cc = [], cu = [];
+    const tiers = [0, 2.5, 9, 21, 39, 66, 93];
+    const shades = ['#9b9a93', '#898d88', '#7d807d', '#68746e', '#66716e', '#83938c', '#9daca7'];
+    for (let k = 0; k < tiers.length; k++) {
+      for (let j = 0; j < rim.length; j++) {
+        const [x, z, y] = rim[j], a = Math.atan2(z / 137, x / 84), depth = tiers[k];
+        const flute = Math.sin(a * 43 + 1.8 * Math.sin(a * 17)) + 0.52 * Math.sin(91 * a + 0.8 * k);
+        const pinch = k === 0 ? 1 : 1 - 0.0021 * depth + 0.034 * flute * (1 - Math.exp(-k));
+        cv.push(x * pinch, y - depth * (1 + 0.085 * Math.sin(a * 19) + 0.045 * flute), z * pinch);
+        cu.push(j * 0.42, depth * 0.23);
+        const color = new T.Color(shades[k]).multiplyScalar(1 + 0.08 * flute);
+        cc.push(color.r, color.g, color.b);
+        if (k < tiers.length - 1) {
+          const i = k * rim.length + j, n = k * rim.length + (j + 1) % rim.length;
+          ci.push(i, n, i + rim.length, n, n + rim.length, i + rim.length);
+        }
+      }
+    }
+    const baseIndex = cv.length / 3;
+    cv.push(0, -102, 0); cu.push(0, 0); cc.push(0.25, 0.30, 0.28);
+    for (let j = 0; j < rim.length; j++) ci.push(baseIndex, (tiers.length - 1) * rim.length + j, (tiers.length - 1) * rim.length + (j + 1) % rim.length);
+    const cliffMat = new T.MeshStandardMaterial({vertexColors: true, map: granite, roughness: 0.97, side: T.DoubleSide});
+    const cliffs = new T.Mesh(makeGeometry(cv, ci, cu, cc), cliffMat);
+    cliffs.name = 'island-cliffs';
+    cliffs.receiveShadow = true;
+
+    const waterClock = {value: 0};
+    const waterUnder = {value: 0};
+    const waterMat = new T.MeshStandardMaterial({
+      color: 0xd7e6ec, roughness: 0.08, metalness: 0.02, envMapIntensity: 0.85,
+      transparent: true, opacity: 0.34, depthWrite: false, side: T.DoubleSide
+    });
+    waterMat.onBeforeCompile = shader => {
+      shader.uniforms.tLake = waterClock;
+      shader.uniforms.uUnder = waterUnder;
+      shader.vertexShader = 'varying vec2 waterXZ;\n' + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nwaterXZ=(modelMatrix*vec4(position,1.)).xz;');
+      shader.fragmentShader = 'uniform float tLake; uniform float uUnder; varying vec2 waterXZ;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+        vec2 p=waterXZ;
+        float ripple=sin(p.y*4.5+.8*sin(p.x*.7+tLake*.35)+tLake*1.2);
+        float swell=sin(p.y*1.65+p.x*.68-.6*tLake+.28*sin(p.x*1.5));
+        float light=smoothstep(.68,.99,ripple*.65+swell*.35)*(1.-smoothstep(.2,1.7,fwidth(p.y)*4.5));
+        diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.93,.97,.99), light*.7);
+        diffuseColor.a=0.22+light*.2;
+        diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.72,.88,.95), uUnder*.55);
+        diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);`);
+    };
+    const waters = lakes.map(lake => {
+      const v = [0, waterLevel, lake.z], idx = [];
+      for (let i = 0; i < 180; i++) {
+        const a = i * Math.PI / 90, r = shoreRadius(lake, a) + 0.8;
+        v.push(Math.cos(a) * r, waterLevel, lake.z + Math.sin(a) * r);
+        idx.push(0, (i + 1) % 180 + 1, i + 1);
+      }
+      const water = new T.Mesh(makeGeometry(v, idx), waterMat);
+      water.name = 'clear-lake';
+      water.renderOrder = 2;
+      return water;
+    });
+
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let row = 0; row <= rows; row += 4) {
+      const z = zMin + row * rowH, e = bounds[row];
+      for (const x of e) {
+        const wx = x + EIGHT.x, wz = z + EIGHT.z;
+        if (wx < minX) minX = wx;
+        if (wx > maxX) maxX = wx;
+        if (wz < minZ) minZ = wz;
+        if (wz > maxZ) maxZ = wz;
+      }
+    }
+    const texW = 384, texH = 512, pad = 3;
     minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
     const sizeX = Math.max(1, maxX - minX), sizeZ = Math.max(1, maxZ - minZ);
     const mask = new Uint8Array(texW * texH * 4);
@@ -153,7 +221,7 @@
       const z = minZ + (j + 0.5) / texH * sizeZ;
       for (let i = 0; i < texW; i++) {
         const x = minX + (i + 0.5) / texW * sizeX;
-        const byte = Math.round(coverage(x, z) * 255);
+        const byte = contains(x, z) ? 255 : 0;
         const p = (j * texW + i) * 4;
         mask[p] = mask[p + 1] = mask[p + 2] = byte;
         mask[p + 3] = 255;
@@ -170,21 +238,82 @@
     carveUniforms.carveMin.value.set(minX, minZ);
     carveUniforms.carveSize.value.set(sizeX, sizeZ);
 
-    const [northX, northZ] = toWorld(0, EIGHT.gap);
-    const [southX, southZ] = toWorld(0, -EIGHT.gap);
-    const mounts = [
-      {id: 'north', x: northX, z: northZ, y: heightAt(northX, northZ), yaw: EIGHT.rotation},
-      {id: 'south', x: southX, z: southZ, y: heightAt(southX, southZ), yaw: EIGHT.rotation + Math.PI}
-    ];
-    EIGHT.deckA = deckA + EIGHT.rise;
-    EIGHT.deckB = deckB + EIGHT.rise;
+    function stood(lx, lz) {
+      const y = surfaceLocal(lx, lz);
+      const lake = lz < 0 ? lakes[0] : lakes[1];
+      if (Math.hypot(lx, lz - lake.z) < 4) return Math.max(y, waterLevel);
+      return y;
+    }
+    const mounts = SITES.map(([lx, lz], index) => {
+      const x = lx + EIGHT.x, z = lz + EIGHT.z;
+      return {id: index + 1, x, z, y: stood(lx, lz), yaw: 0};
+    });
     EIGHT.mounts = mounts;
 
     const group = new T.Group();
     group.name = 'exhibition';
-    group.add(terrain);
+    group.position.set(EIGHT.x, 0, EIGHT.z);
+    group.add(terrain, cliffs, ...waters);
+    const endingLake = root.createEndingLake(T, {
+      group, asset, waterUnder,
+      anchorX: EIGHT.x, anchorZ: EIGHT.z,
+      lakeZ: lakes[1].z, lakeR: lakes[1].r, waterLevel
+    });
+    if (loader && asset) {
+      loader.load(asset('work-labels.png'), sheet => {
+        sheet.colorSpace = T.SRGBColorSpace;
+        SITES.forEach(([lx, lz], index) => {
+          const id = index + 1;
+          const texture = sheet.clone();
+          texture.needsUpdate = true;
+          texture.repeat.set(0.5, 0.125);
+          texture.offset.set((index % 2) * 0.5, 1 - (1 + Math.floor(index / 2)) * 0.125);
+          const material = new T.SpriteMaterial({map: texture, color: 0x000000, transparent: true, depthWrite: false, fog: false, toneMapped: false});
+          const label = new T.Sprite(material);
+          label.name = 'work-label-' + id;
+          label.center.set(124 / 1024, 1 - 90 / 256);
+          const pixelsPerUnit = id === 1 ? 325 : 240;
+          label.scale.set(1024 / pixelsPerUnit, 256 / pixelsPerUnit, 1);
+          const lake = lz < 0 ? lakes[0] : lakes[1];
+          const afloat = Math.hypot(lx, lz - lake.z) < 4;
+          const x = lx + (afloat ? 0 : 2.4), z = lz + (afloat ? 0 : 0.1);
+          label.position.set(x, stood(lx, lz) + (afloat ? 2.15 : 2.45), z);
+          group.add(label);
+        });
+      });
+    }
 
-    const map = buildMap(EIGHT, toWorld, baseGround);
+    const ringPath = pts => {
+      let d = '';
+      for (let i = 0; i < pts.length; i++) d += (i ? 'L' : 'M') + pts[i][0].toFixed(2) + ' ' + pts[i][1].toFixed(2);
+      return d + 'Z';
+    };
+    let reach = 0;
+    const right = [], left = [];
+    for (let z = zMin; z <= zMax; z += 1.25) {
+      const e = edges(z);
+      right.push([e[1], z]);
+      left.push([e[0], z]);
+      reach = Math.max(reach, Math.hypot(e[0], z), Math.hypot(e[1], z));
+    }
+    const tip = edges(zMax);
+    right.push([tip[1], zMax]);
+    left.push([tip[0], zMax]);
+    reach = Math.max(reach, Math.abs(zMin), Math.abs(zMax));
+    const lakePaths = lakes.map(lake => {
+      const ring = [];
+      for (let i = 0; i < 96; i++) {
+        const a = i * Math.PI / 48, r = shoreRadius(lake, a);
+        ring.push([Math.cos(a) * r, lake.z + Math.sin(a) * r]);
+      }
+      return ringPath(ring);
+    });
+    const map = buildMap(EIGHT, toWorld, (x, z) => contains(x, z) ? sample(x, z) : NaN, {
+      outline: ringPath(right.concat(left.reverse())),
+      lakes: lakePaths,
+      sites: mounts,
+      reach: reach + 4
+    });
     map.panel.inert = true;
     map.panel.setAttribute('aria-hidden', 'true');
     let pinned = false, pointerInside = false, pointerDown = false, focused = false;
@@ -269,6 +398,7 @@
       eight: EIGHT,
       mounts,
       sample,
+      contains,
       interior() { return 0; },
       constrain() {},
       armIntro(now) {
@@ -276,7 +406,9 @@
         setOpen(true, now);
       },
       togglePin,
-      sync(now, x, z, camera, engaged, hidden) {
+      sync(now, x, z, bodyY, camera, engaged, hidden) {
+        waterClock.value = now * 0.001;
+        endingLake.update(now * 0.001, x, z, bodyY, camera);
         latest.x = x;
         latest.z = z;
         camera.getWorldDirection(heading);
@@ -304,10 +436,12 @@
       for (let i = 0; i <= n; i++) {
         const h = sample(anchorX - half + i * step, z);
         hs[j * (n + 1) + i] = h;
+        if (!Number.isFinite(h)) continue;
         if (h < lo) lo = h;
         if (h > hi) hi = h;
       }
     }
+    if (!(hi > lo)) return [];
     const levels = [];
     for (let level = Math.ceil(lo / interval) * interval; level < hi; level += interval) levels.push(+level.toFixed(4));
     const edgePoint = (x0, z0, edge, t) => {
@@ -328,6 +462,7 @@
         for (let i = 0; i < n; i++) {
           const x0 = -half + i * step;
           const hbl = at(i, j), hbr = at(i + 1, j), htr = at(i + 1, j + 1), htl = at(i, j + 1);
+          if (!Number.isFinite(hbl + hbr + htr + htl)) continue;
           let code = 0;
           if (hbl >= level) code |= 1;
           if (hbr >= level) code |= 2;
@@ -426,19 +561,18 @@
     return lines;
   }
 
-  function buildMap(eight, toWorld, sampleHeight) {
+  function buildMap(eight, toWorld, sampleHeight, island) {
     const panel = document.querySelector('#atlas-panel');
     const svg = document.querySelector('#atlas-svg');
     const rootEl = document.querySelector('#atlas');
     const pin = document.querySelector('#atlas-pin');
     const openBtn = document.querySelector('#atlas-open');
     const NS = 'http://www.w3.org/2000/svg';
-    const outer = eight.radius + eight.slope * 0.42;
     const view = 216;
     const anchorX = eight.x;
     const anchorZ = eight.z;
-    const margin = 36;
-    const fitReach = Math.max(Math.hypot(anchorX, anchorZ), eight.gap + outer);
+    const margin = 16;
+    const fitReach = Math.max(island.reach, Math.hypot(anchorX, anchorZ));
     const baseScale = (view / 2 - margin) / fitReach;
     const el = (name, attrs) => {
       const node = document.createElementNS(NS, name);
@@ -447,31 +581,21 @@
     };
 
     svg.replaceChildren();
-    const defs = el('defs', {});
-    const bleed = el('filter', {id: 'atlas-bleed', x: '-60%', y: '-60%', width: '220%', height: '220%'});
-    bleed.appendChild(el('feGaussianBlur', {stdDeviation: '7'}));
-    defs.appendChild(bleed);
-    svg.appendChild(defs);
-
-    const wash = el('g', {filter: 'url(#atlas-bleed)'});
-    svg.appendChild(wash);
-    wash.appendChild(el('ellipse', {class: 'wash', cx: 108, cy: 110, rx: 98, ry: 92}));
-
-    const fade = el('radialGradient', {id: 'atlas-fade', cx: '50%', cy: '50%', r: '68%'});
-    fade.appendChild(el('stop', {offset: '62%', 'stop-color': '#fff'}));
-    fade.appendChild(el('stop', {offset: '100%', 'stop-color': '#fff', 'stop-opacity': '0'}));
-    defs.appendChild(fade);
-    const mask = el('mask', {id: 'atlas-mask', maskUnits: 'userSpaceOnUse', x: '0', y: '0', width: '216', height: '216'});
-    mask.appendChild(el('rect', {x: '0', y: '0', width: '216', height: '216', fill: 'url(#atlas-fade)'}));
-    defs.appendChild(mask);
-
-    const frame = el('g', {id: 'atlas-relief', mask: 'url(#atlas-mask)'});
-    const relief = el('g', {});
-    frame.appendChild(relief);
-    svg.appendChild(frame);
-    for (const line of traceContours(sampleHeight, anchorX, anchorZ, 78, 1.35, 0.7)) {
+    const relief = el('g', {id: 'atlas-relief'});
+    svg.appendChild(relief);
+    relief.appendChild(el('path', {class: 'island', d: island.outline, 'vector-effect': 'non-scaling-stroke'}));
+    for (const d of island.lakes) relief.appendChild(el('path', {class: 'lake', d, 'vector-effect': 'non-scaling-stroke'}));
+    const half = Math.ceil(island.reach);
+    for (const line of traceContours(sampleHeight, anchorX, anchorZ, half, 2.4, 1.05)) {
       relief.appendChild(el('path', {class: line.index ? 'contour index' : 'contour', d: line.d, 'vector-effect': 'non-scaling-stroke'}));
     }
+    const marks = el('g', {id: 'atlas-sites'});
+    for (const site of island.sites) {
+      const text = el('text', {class: 'work-num'});
+      text.textContent = String(site.id);
+      marks.appendChild(text);
+    }
+    svg.appendChild(marks);
     const you = el('g', {id: 'atlas-you'});
     you.appendChild(el('circle', {class: 'you-core', cx: '0', cy: '0', r: '7'}));
     you.appendChild(el('circle', {class: 'you-layer you-layer-a', cx: '0', cy: '0', r: '14'}));
@@ -504,6 +628,11 @@
       const scale = reach * baseScale <= limit ? baseScale : limit / Math.max(reach, 0.001);
       if (Math.abs(scale - landScale) > 0.0001) placeRelief(scale);
       you.setAttribute('transform', `translate(${(view / 2 + dx * scale).toFixed(2)} ${(view / 2 + dz * scale).toFixed(2)})`);
+      island.sites.forEach((site, index) => {
+        const node = marks.children[index];
+        node.setAttribute('x', (view / 2 + (site.x - anchorX) * scale).toFixed(2));
+        node.setAttribute('y', (view / 2 + (site.z - anchorZ) * scale).toFixed(2));
+      });
       const deg = Math.atan2(latest.dirX, -latest.dirZ) * 180 / Math.PI;
       arrow.setAttribute('transform', `rotate(${deg.toFixed(2)})`);
     }

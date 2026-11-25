@@ -545,7 +545,8 @@
     }
     travelStatus.textContent=settleHome?'이륙해서 처음 위치로 돌아갑니다':'이륙해서 그 위치로 이동합니다';
   }
-  function returnHome(){ flyTo(0,0,true,false); }
+  const spawn = exhibition.spawn;
+  function returnHome(){ flyTo(spawn.x, spawn.z, true, false); }
   function finishTravel(){
     homing=false; hoverTime=0;
     velocity.set(0,0,0); verticalSpeed=0; flight.speed=0;
@@ -797,8 +798,8 @@
   const lightOffset=new T.Vector3(-5.5,9,-4.8);
   function updateCoords(){posX.textContent=(Math.abs(location.x)<.05?0:location.x).toFixed(1);posZ.textContent=(Math.abs(location.z)<.05?0:location.z).toFixed(1);}
   function reset(){
-    clearInput();location.set(0,0,0);velocity.set(0,0,0);orbit.yaw=.20;orbit.pitch=.075;
-    location.y=groundAt(0,0,groundNormal);
+    clearInput();location.set(spawn.x,0,spawn.z);velocity.set(0,0,0);orbit.yaw=.20;orbit.pitch=.075;
+    location.y=groundAt(spawn.x,spawn.z,groundNormal);
     heading=.52;roll=-.13;hop=jumpSpeed=wobble=wobbleSpeed=impactDelay=0;lastLobe=0;wasMoving=false;
     airY=0;verticalSpeed=0;setMode('ground');
     pose();view(0,true);updateCoords();

@@ -20,14 +20,16 @@
   renderer.shadowMap.type = T.PCFSoftShadowMap;
   const scene = new T.Scene();
   scene.background = new T.Color(0xd3dee5);
-  scene.fog = new T.FogExp2(scene.background, .046);
+  scene.fog = new T.FogExp2(scene.background, .016);
   const camera = new T.PerspectiveCamera(43, 1, .06, 520);
   const manager = new T.LoadingManager();
   let missingMaterial = false;
   manager.onError = () => { missingMaterial = true; };
   let sceneReady = false;
+  let previews = null;
   manager.onLoad = () => {
     sceneReady = true;
+    previews?.arm();
     if (!missingMaterial) status.hidden = true;
     else status.textContent = '일부 재질을 불러오지 못했어요. 새로고침해 주세요.';
   };
@@ -62,11 +64,23 @@
   granite.wrapS = granite.wrapT = T.RepeatWrapping;
   granite.colorSpace = T.SRGBColorSpace;
   granite.anisotropy = Math.min(8,renderer.capabilities.getMaxAnisotropy());
+  const carveUniforms = {
+    carveMask:{value:new T.DataTexture(new Uint8Array([0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255]), 2, 2, T.RGBAFormat)},
+    carveMin:{value:new T.Vector2(-1,-1)},
+    carveSize:{value:new T.Vector2(2,2)}
+  };
+  carveUniforms.carveMask.value.colorSpace = T.NoColorSpace;
+  carveUniforms.carveMask.value.magFilter = T.LinearFilter;
+  carveUniforms.carveMask.value.minFilter = T.LinearFilter;
+  carveUniforms.carveMask.value.wrapS = carveUniforms.carveMask.value.wrapT = T.ClampToEdgeWrapping;
+  carveUniforms.carveMask.value.generateMipmaps = false;
+  carveUniforms.carveMask.value.needsUpdate = true;
   const stoneMat = new T.MeshStandardMaterial({map:granite, roughness:.94, metalness:0, envMapIntensity:.13});
-  stoneMat.onBeforeCompile = shader => {
+  function compileGranite(shader, carve){
     shader.vertexShader = 'varying vec2 groundXZ;\n' + shader.vertexShader.replace('#include <worldpos_vertex>',
       '#include <worldpos_vertex>\ngroundXZ = (modelMatrix * vec4(transformed,1.)).xz;');
-    shader.fragmentShader = 'varying vec2 groundXZ;\n' + shader.fragmentShader.replace('#include <map_fragment>', `
+    let fragment = 'varying vec2 groundXZ;\n' + shader.fragmentShader;
+    let grain = `
       vec2 grid = groundXZ / vec2(2.4,1.24);
       float row = floor(grid.y);
       grid.x += mod(row,2.)*.5;
@@ -88,7 +102,18 @@
       float fade = 1.-smoothstep(.012,.08,aa);
       grains *= 1.-(.43*cut+.095*bevel)*fade;
       diffuseColor.rgb *= grains;
-    `).replace('#include <normal_fragment_maps>', `
+    `;
+    if(carve){
+      fragment = 'uniform sampler2D carveMask;\nuniform vec2 carveMin;\nuniform vec2 carveSize;\n' + fragment;
+      shader.uniforms.carveMask = carveUniforms.carveMask;
+      shader.uniforms.carveMin = carveUniforms.carveMin;
+      shader.uniforms.carveSize = carveUniforms.carveSize;
+      grain = `
+      vec2 carveUv = (groundXZ - carveMin) / carveSize;
+      if(carveUv.x>0.0 && carveUv.y>0.0 && carveUv.x<1.0 && carveUv.y<1.0 && texture2D(carveMask, carveUv).r>0.018) discard;
+      ` + grain;
+    }
+    shader.fragmentShader = fragment.replace('#include <map_fragment>', grain).replace('#include <normal_fragment_maps>', `
       #include <normal_fragment_maps>
       // A height gradient in world units keeps grain relief stable with zoom.
       vec3 dxView = dFdx(-vViewPosition), dyView = dFdy(-vViewPosition);
@@ -98,7 +123,16 @@
                         * sign(reliefDet)/max(abs(reliefDet),1.e-8);
       normal = normalize(normal - reliefSlope/max(1.,length(reliefSlope)/.68));
     `);
-  };
+  }
+  const compilePit = shader => compileGranite(shader, false);
+  stoneMat.onBeforeCompile = compilePit;
+  const pitMat = stoneMat.clone();
+  pitMat.onBeforeCompile = compilePit;
+  pitMat.vertexColors = true;
+  pitMat.polygonOffset = true;
+  pitMat.polygonOffsetFactor = -1;
+  pitMat.polygonOffsetUnits = -1;
+  stoneMat.onBeforeCompile = shader => compileGranite(shader, true);
   // Adjacent patches use the same elevation and normal at their shared edge.
   const fieldWidth = 96, divisions = 192, stride = divisions+1;
   const groundStep = fieldWidth/divisions;
@@ -154,8 +188,9 @@
     tile.receiveShadow=true; fields.add(tile);
   }
   scene.add(fields);
+  fields.visible=false;
   // Interpolate the exact triangle under the player and camera.
-  function groundAt(x,z,normal){
+  function baseGround(x,z,normal){
     const gx=T.MathUtils.euclideanModulo(x+fieldWidth/2,fieldWidth)/groundStep;
     const gz=T.MathUtils.euclideanModulo(z+fieldWidth/2,fieldWidth)/groundStep;
     const ix=Math.min(divisions-1,Math.floor(gx)), iz=Math.min(divisions-1,Math.floor(gz));
@@ -167,6 +202,13 @@
     if(normal) normal.set(-dx,groundStep,-dz).normalize();
     return lower ? elevations[a]+fx*dx+fz*dz : elevations[c]+(fx-1)*dx+(fz-1)*dz;
   }
+  let sampleGround = baseGround;
+  function groundAt(x,z,normal){ return sampleGround(x,z,normal); }
+  const exhibition = createExhibition(T, baseGround, pitMat, carveUniforms, granite, loader, asset);
+  sampleGround = exhibition.sample;
+  scene.add(exhibition.group);
+  previews = window.StudioPreview.create({T, scene, camera, canvas, mounts: exhibition.mounts});
+  if (sceneReady) previews.arm();
   const sun = new T.DirectionalLight(0xfff0d9, 1.6);
   scene.add(sun, sun.target);
   sun.castShadow = true; sun.shadow.mapSize.set(1024,1024);
@@ -200,67 +242,7 @@
   eight.scale.setScalar(glyphScale);
   const outline = glyph.getSpacedPoints(112);
 
-  function makeCloudPlate(width, height) {
-    const canvas = document.createElement('canvas');
-    const cols = 720, rows = Math.max(2, Math.round(cols * height / width));
-    canvas.width = cols; canvas.height = rows;
-    const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(cols, rows);
-    const pixels = image.data;
-    const cx = (cols - 1) / 2, cy = (rows - 1) / 2;
-    const bodyW = cols * .98, bodyH = rows * .98;
-    const radius = Math.min(bodyW, bodyH) * .2;
-    const hx = bodyW / 2 - radius, hy = bodyH / 2 - radius;
-    const fade = Math.min(bodyW, bodyH) * .28;
-    const smooth = t => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const qx = Math.abs(x - cx) - hx, qy = Math.abs(y - cy) - hy;
-        const dist = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - radius;
-        const cover = smooth(smooth(-dist / fade));
-        const grain = (Math.random() - .5) * 7 * cover;
-        const tone = 245 + grain;
-        const i = (y * cols + x) * 4;
-        pixels[i] = tone;
-        pixels[i + 1] = Math.min(255, tone + 3);
-        pixels[i + 2] = Math.min(255, tone + 6);
-        pixels[i + 3] = Math.round(168 * cover);
-      }
-    }
-    ctx.putImageData(image, 0, 0);
-    const map = new T.CanvasTexture(canvas);
-    map.colorSpace = T.SRGBColorSpace;
-    map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    const material = new T.MeshBasicMaterial({
-      map, transparent: true, depthWrite: false, fog: false, toneMapped: false, side: T.DoubleSide
-    });
-    const plate = new T.Mesh(new T.PlaneGeometry(width, height), material);
-    plate.name = 'cloud-plate';
-    plate.renderOrder = 1;
-    return plate;
-  }
-
-  // The transparent print carries only the letterforms, set in Pretendard Medium.
-  const printHeight=2.10, printWidth=printHeight*2545/2460;
-  const printMap=loader.load(asset('passage.png'));
-  printMap.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
-  const printMaterial=new T.MeshBasicMaterial({map:printMap,color:0x000000,
-    transparent:true,alphaTest:.004,depthWrite:false,fog:false,toneMapped:false});
-  const printGeometry=new T.PlaneGeometry(printWidth,printHeight);
-  const passage=new T.Group();
-  passage.name='floating-passage';
-  const cloudPlate=makeCloudPlate(printWidth*1.7, printHeight*1.56);
-  const front=new T.Mesh(printGeometry,printMaterial);
-  const back=new T.Mesh(printGeometry,printMaterial);
-  front.position.z=.012; back.position.z=-.012;
-  back.rotation.y=Math.PI;
-  front.renderOrder=back.renderOrder=2;
-  passage.add(cloudPlate,front,back);
-  geometry.computeBoundingBox();
-  const uprightHeight=(geometry.boundingBox.max.y-geometry.boundingBox.min.y)*glyphScale;
-  passage.rotation.y=.20;
-  passage.position.set(.31,groundAt(.31,1.55)+2*uprightHeight+printHeight/2,1.55);
-  scene.add(passage);
+  const printWidth=2.10*2545/2460;
 
   const stamp = document.createElement('canvas'); stamp.width = stamp.height = 128;
   const ink = stamp.getContext('2d'), gradient = ink.createRadialGradient(64,64,0,64,64,64);
@@ -277,8 +259,9 @@
   const rimOffset=new T.Vector3();
   const groundNormal=new T.Vector3(), terrainTilt=new T.Quaternion(), shadowHeading=new T.Quaternion();
   const orbit = {yaw:.20,pitch:.075};
+  let pitBlend = 0;
   let heading=.52, roll=-.13, hop=0, jumpSpeed=0, wobble=0, wobbleSpeed=0, lastLobe=0, impactDelay=0;
-  let mode='ground', airY=0, verticalSpeed=0, paused=false, homing=false;
+  let mode='ground', airY=0, verticalSpeed=0, paused=false, homing=false, homeStage='climb';
   const flight={yaw:0,pitch:0,bank:0,speed:0,takeoff:0};
   const previousAttitude=new T.Quaternion(), airAttitude=new T.Quaternion();
   const followPoint=new T.Vector3();
@@ -364,7 +347,9 @@
     flightLabel.textContent=mode==='flying'?'착륙':mode==='landing'?'다시 이륙':'이륙';
     steerHint.textContent=inFlight?'↑↓ 고도 · ←→ 선회':'이동';
     travelStatus.textContent=mode==='flying'?'비행 중. 위아래로 고도 조절, 좌우로 선회합니다.':
-      mode==='landing'?'착륙 중':mode==='jumping'?'점프':'지상';
+      mode==='landing'?'착륙 중':mode==='falling'?'절벽에서 떨어져 곧 돌아옵니다.':mode==='jumping'?'점프':'지상';
+    contact.visible=mode==='ground'||mode==='jumping';
+    if(next==='ground') lookFree=false;
     for(const button of document.querySelectorAll('[data-key]')){
       const labels=inFlight?['상승','좌선회','하강','우선회']:['앞으로','왼쪽으로','뒤로','오른쪽으로'];
       const index=['ArrowUp','ArrowLeft','ArrowDown','ArrowRight'].indexOf(button.dataset.key);
@@ -395,11 +380,24 @@
   jumpButton.addEventListener('click',jump);
   flightButton.addEventListener('click',toggleFlight);
   document.addEventListener('click',e=>{
+    if(e.target?.closest?.('#atlas')) return;
     if(e.detail>0&&e.target?.closest?.('button')) canvas.focus({preventScroll:true});
   });
   function clearInput(){held.clear(); pointerKeys.clear(); drag=null;}
-  let drag=null;
+  let drag=null, lookFree=false;
   window.addEventListener('keydown',e=>{
+    if(e.isComposing||e.key==='Process') return;
+    if(e.code==='F5'||((e.ctrlKey||e.metaKey)&&e.code==='KeyR')){
+      e.preventDefault();
+      returnHome();
+      return;
+    }
+    if(e.code==='KeyM' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !e.target?.closest?.('input,textarea,select,[contenteditable="true"]')){
+      e.preventDefault();
+      exhibition.togglePin();
+      return;
+    }
+    if(e.target?.closest?.('#atlas')) return;
     if(e.metaKey||e.ctrlKey||e.altKey||e.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
     if(homing){
       if(e.code==='Space'||keyDir[e.code]||e.code==='ShiftLeft'||e.code==='ShiftRight'||e.code==='KeyF') e.preventDefault();
@@ -427,14 +425,25 @@
   }
   canvas.addEventListener('pointerdown',e=>{
     if(drag||e.button!==0) return;
-    canvas.focus({preventScroll:true}); canvas.setPointerCapture(e.pointerId); drag={id:e.pointerId,x:e.clientX,y:e.clientY};
+    canvas.focus({preventScroll:true}); canvas.setPointerCapture(e.pointerId);
+    drag={id:e.pointerId,x:e.clientX,y:e.clientY,ox:e.clientX,oy:e.clientY,moved:false};
   });
   canvas.addEventListener('pointermove',e=>{
     if (!drag || drag.id!==e.pointerId) return;
+    if(Math.hypot(e.clientX-drag.ox, e.clientY-drag.oy)>5){
+      drag.moved=true;
+      if((mode==='flying'||mode==='landing') && !homing) lookFree=true;
+    }
     orbit.yaw-=(e.clientX-drag.x)*.006; orbit.pitch=T.MathUtils.clamp(orbit.pitch+(e.clientY-drag.y)*.004,-.03,.83);
     drag.x=e.clientX; drag.y=e.clientY;
   });
-  for(const name of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(name,e=>{if(drag?.id===e.pointerId)drag=null;});
+  for(const name of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(name,e=>{
+    if(drag?.id!==e.pointerId) return;
+    const tap=name==='pointerup' && !drag.moved;
+    const x=e.clientX, y=e.clientY;
+    drag=null;
+    if(tap) previews.press(x, y);
+  });
 
   function pose() {
     terrainTilt.setFromUnitVectors(up,groundNormal);
@@ -453,41 +462,54 @@
       for(let side=-1;side<=1;side+=2){
         rimOffset.set(p.x,p.y,side*thickness*.5).multiplyScalar(glyphScale).applyQuaternion(eight.quaternion);
         const ground=groundAt(location.x+rimOffset.x,location.z+rimOffset.z);
-        bodyY=Math.max(bodyY,ground-rimOffset.y);
+        if(Number.isFinite(ground)) bodyY=Math.max(bodyY,ground-rimOffset.y);
       }
     }
+    if(!Number.isFinite(bodyY)) bodyY=location.y;
     eight.position.set(location.x,bodyY+bevel*glyphScale/groundNormal.y+hop,location.z);
     contact.position.copy(location).addScaledVector(groundNormal,.004);
     contact.quaternion.copy(terrainTilt).multiply(shadowHeading.setFromAxisAngle(up,heading));
     shadowMat.opacity=.88*Math.exp(-hop*2.2/glyphScale);
     return foot.y;
   }
-  function fly(dt,turn,climb){
+  function fly(dt,turn,climb,guide){
     const landing=mode==='landing';
+    const guided=!!guide;
     flight.takeoff=Math.max(0,flight.takeoff-dt);
-    const targetPitch=landing?-.17:climb*.55+.36*flight.takeoff/1.15;
-    flight.pitch+= (targetPitch-flight.pitch)*ease(3.5,dt);
-    flight.bank+= (-turn*.85-flight.bank)*ease(4,dt);
-    flight.yaw=wrap(flight.yaw+Math.sin(flight.bank)*1.65*dt);
-    flight.speed+=((landing?1.25:6.9-.9*Math.sin(flight.pitch))-flight.speed)*ease(landing?1.6:1.2,dt);
-    const forwardSpeed=flight.speed*Math.cos(flight.pitch);
+    const targetPitch=guided?(guide.drop?-.04:climb*.55+.1):landing?-.08:climb*.55+.36*flight.takeoff/1.15;
+    flight.pitch+= (targetPitch-flight.pitch)*ease(guided?2.2:3.5,dt);
+    flight.bank+= (-turn*1.2-flight.bank)*ease(guided?4:11,dt);
+    if(!guided) flight.yaw=wrap(flight.yaw-turn*2.6*dt+Math.sin(flight.bank)*.85*dt);
+    if(!guided) flight.speed+=((landing?1.05:6.9-.9*Math.sin(flight.pitch))-flight.speed)*ease(landing?2.4:1.2,dt);
+    const forwardSpeed=flight.speed*Math.cos(Math.max(0,flight.pitch));
     velocity.set(-Math.sin(flight.yaw)*forwardSpeed,0,-Math.cos(flight.yaw)*forwardSpeed);
-    location.addScaledVector(velocity,dt);
-    location.y=groundAt(location.x,location.z,groundNormal);
-    const descent=T.MathUtils.clamp(1.1+(airY-location.y)*.55,1.1,5.8);
-    const targetVertical=landing?-descent:flight.speed*Math.sin(flight.pitch);
-    verticalSpeed+=(targetVertical-verticalSpeed)*ease(4,dt);
+    if(!(guided&&guide.drop)) location.addScaledVector(velocity,dt);
+    const surface=groundAt(location.x,location.z,groundNormal);
+    const supported=Number.isFinite(surface);
+    if(supported && airY<surface+1.55) exhibition.constrain(location, airY);
+    if(supported) location.y=surface;
+    if(!supported && (landing||(guided&&guide.drop)) && !homing){
+      startFall();
+      return;
+    }
+    const dropGap=Math.max(0,airY-(supported?location.y:airY));
+    const descent=landing?Math.min(2.35,.7+dropGap*.2):0;
+    const targetVertical=guided&&guide.drop?-guide.sink:guided&&guide.hold!=null?guide.hold:landing?-descent:flight.speed*Math.sin(flight.pitch);
+    verticalSpeed+=(targetVertical-verticalSpeed)*ease(guided?2.2:4,dt);
     airY+=verticalSpeed*dt;
 
     previousAttitude.copy(eight.quaternion);
-    const lobe=pose()>.08?1:-1;
-    const restingY=eight.position.y;
-    if(landing && airY<=restingY){
-      lastLobe=lobe;impactDelay=.16;wasMoving=true;wobbleSpeed=.65;
-      verticalSpeed=0; knock(1.7,lobe); setMode('ground');
+    const lobe=supported&&pose()>.08?1:-1;
+    const restingY=supported?eight.position.y:airY-2;
+    if(!supported) eight.position.set(location.x,airY,location.z);
+    if(supported && (landing||(guided&&guide.drop)) && airY<=restingY){
+      verticalSpeed=0; flight.speed=0; velocity.set(0,0,0);
+      if(!homing){lastLobe=lobe;impactDelay=.16;wasMoving=true;wobbleSpeed=.4;knock(1.1,lobe);}
+      else wobbleSpeed=.18;
+      setMode('ground');
       return;
     }
-    if(!landing){
+    if(supported && !landing && !(guided&&guide.drop)){
       const launchBlend=1-flight.takeoff/1.15;
       const clearance=location.y+.68/groundNormal.y;
       const floor=T.MathUtils.lerp(restingY,Math.max(restingY,clearance),launchBlend);
@@ -505,15 +527,85 @@
   const veil=document.querySelector('#veil');
   const veilMist=veil.querySelector('.mist'), veilFill=veil.querySelector('.fill');
   let fogStart=0, fogPlaced=false;
-  function returnHome(){
-    if(homing) return;
-    const distance=Math.hypot(location.x,location.z);
-    const airborne=mode==='flying'||mode==='landing'||mode==='jumping';
-    if(distance<.15&&!airborne) return;
-    homing=true; fogPlaced=false; fogStart=performance.now();
-    clearInput(); velocity.set(0,0,0);
-    veil.hidden=false;
-    travelStatus.textContent='하얀 안개가 차오릅니다';
+  let homeTarget={x:0,z:0,settle:true}, hoverTime=0, arrival=null;
+  function flyTo(x,z,settleHome,rush){
+    const dx=location.x-x, dz=location.z-z;
+    const distance=Math.hypot(dx,dz);
+    homeTarget={x,z,settle:!!settleHome,rush:!!rush};
+    arrival=null;
+    if(!homing){
+      if(distance<.45&&!settleHome) return;
+      clearInput(); velocity.set(0,0,0);
+      homing=true; homeStage='climb'; lookFree=false;
+      flight.yaw=distance<.25?orbit.yaw:Math.atan2(dx,dz);
+      flight.bank=0; flight.pitch=.42; flight.speed=2.2; flight.takeoff=1.15;
+      airY=eight.position.y; verticalSpeed=2.4;
+      hop=jumpSpeed=0;
+      setMode('flying');
+    }
+    travelStatus.textContent=settleHome?'이륙해서 처음 위치로 돌아갑니다':'이륙해서 그 위치로 이동합니다';
+  }
+  const spawn = exhibition.spawn;
+  function returnHome(){ flyTo(spawn.x, spawn.z, true, false); }
+  function finishTravel(){
+    homing=false; hoverTime=0;
+    velocity.set(0,0,0); verticalSpeed=0; flight.speed=0;
+    const miss=Math.hypot(location.x-homeTarget.x,location.z-homeTarget.z);
+    if(miss>1.6){location.x=homeTarget.x;location.z=homeTarget.z;}
+    location.y=groundAt(location.x,location.z,groundNormal);
+    arrival={
+      x:homeTarget.x, z:homeTarget.z, pose:homeTarget.settle,
+      heading:homeTarget.settle?.52:flight.yaw,
+      roll:homeTarget.settle?-.13:roll,
+      yaw:homeTarget.settle?.20:orbit.yaw,
+      pitch:homeTarget.settle?.075:orbit.pitch
+    };
+    setMode('ground'); pose(); updateCoords();
+    travelStatus.textContent=homeTarget.settle?'처음 위치에 내려왔습니다':'그 위치에 내려왔습니다';
+  }
+  function stepHome(dt){
+    if(mode==='ground'){ finishTravel(); return; }
+    const dx=location.x-homeTarget.x, dz=location.z-homeTarget.z;
+    const distance=Math.hypot(dx,dz);
+    const floor=groundAt(location.x,location.z);
+    const altitude=Number.isFinite(floor)?airY-floor:8;
+    if(homeStage==='down' && !Number.isFinite(floor)){
+      homing=false;
+      startFall();
+      return;
+    }
+    if(homeStage==='hover') hoverTime+=dt; else hoverTime=0;
+    const rush=!!homeTarget.rush;
+    if(homeStage==='climb'){
+      if(flight.takeoff<=.05&&altitude>(rush?3.2:6.2)) homeStage=distance<3.2?'hover':'cruise';
+    }else if(homeStage==='cruise'&&distance<3.2&&flight.speed<(rush?4.2:2.6)) homeStage='hover';
+    else if(homeStage==='hover'&&(hoverTime>(rush?.28:1.5)||(distance<.55&&flight.speed<.8))) homeStage='down';
+    if(homeStage!=='down'&&distance>.3){
+      const desired=Math.atan2(dx,dz);
+      flight.yaw+=wrap(desired-flight.yaw)*Math.min(1,dt*(distance<5?2.2:3.5));
+    }
+    flight.bank*=Math.max(0,1-dt*5);
+    let speedGoal=0, climb=0, guide=null;
+    if(homeStage==='climb'){
+      speedGoal=rush?Math.min(7.5,Math.max(distance,2.4)):Math.min(2.8,Math.max(distance,1.2)); climb=1; guide={};
+    }else if(homeStage==='cruise'){
+      speedGoal=rush?(distance>18?12:distance>8?8.4:3.2):(distance>22?6.2:distance>10?3.6:1.7);
+      climb=altitude<(rush?4:6)?.4:altitude>(rush?6.4:8.6)?-.25:0; guide={};
+    }else if(homeStage==='hover'){
+      speedGoal=0; guide={hold:altitude<(rush?3.2:5.6)?.6:altitude>(rush?5:7.2)?-.45:0};
+    }else{
+      speedGoal=0; guide={drop:true, sink:rush?Math.min(4.4,1.35+Math.max(0,altitude)*.32):Math.min(2.15,.65+Math.max(0,altitude)*.16)};
+    }
+    flight.speed+=(speedGoal-flight.speed)*Math.min(1,dt*3);
+    if(homeStage==='hover'||homeStage==='down') flight.speed*=Math.max(0,1-dt*3.4);
+    fly(dt,0,climb,guide);
+    if(homeStage==='hover'||homeStage==='down'){
+      const pull=Math.min(1,dt*(homeStage==='down'?2.6:1.8));
+      location.x+=(homeTarget.x-location.x)*pull;
+      location.z+=(homeTarget.z-location.z)*pull;
+      velocity.set(0,0,0);
+    }
+    if(mode==='ground') finishTravel();
   }
   function updateHomeFog(now){
     if(!homing) return;
@@ -539,7 +631,55 @@
     veilMist.style.transform=`translate3d(0,${shift.toFixed(2)}%,0) scale(${(1.04+mist*.08).toFixed(3)})`;
     veilFill.style.opacity=fill.toFixed(3);
   }
+  let fallStartedAt=0, cliffFade=null;
+  function beginCliffFade(now){
+    if(cliffFade) return;
+    cliffFade={start:now, placed:false};
+    veil.hidden=false;
+    travelStatus.textContent='화면이 걷히며 처음 위치로 돌아갑니다';
+  }
+  function updateCliffFade(now){
+    if(!cliffFade) return;
+    const rise=780, hold=160, fall=980, t=now-cliffFade.start;
+    const fade=u=>{const x=Math.min(1,Math.max(0,u)); return x*x*(3-2*x);};
+    if(t>=rise+hold+fall){
+      veilMist.style.opacity='0'; veilFill.style.opacity='0';
+      veil.hidden=true; cliffFade=null;
+      travelStatus.textContent='지상';
+      return;
+    }
+    let cover;
+    if(t<rise) cover=fade(t/rise);
+    else if(t<rise+hold) cover=1;
+    else cover=1-fade((t-rise-hold)/fall);
+    if(t>=rise && !cliffFade.placed){
+      cliffFade.placed=true;
+      reset();
+      travelStatus.textContent='처음 위치가 보입니다';
+    }
+    veilMist.style.opacity=String(cover);
+    veilMist.style.transform='none';
+    veilFill.style.opacity=String(cover);
+  }
+  function startFall(){
+    if(mode==='falling'||homing) return;
+    airY=eight.position.y;
+    verticalSpeed=Math.min(0, verticalSpeed, jumpSpeed);
+    hop=0; jumpSpeed=0;
+    fallStartedAt=performance.now();
+    setMode('falling');
+  }
+  function fall(dt){
+    verticalSpeed=Math.max(-48, verticalSpeed-22*dt);
+    airY+=verticalSpeed*dt;
+    location.y=airY;
+    eight.position.set(location.x, airY, location.z);
+    eight.rotateX(dt*.9);
+    eight.rotateZ(-dt*1.7);
+  }
   function move(dt) {
+    if(mode==='falling'){fall(dt);return;}
+    if(arrival&&(held.size||pointerKeys.size)) arrival=null;
     let x=0,z=0;
     for(const key of new Set([...held,...pointerKeys.values()])){
       if(keyDir[key]){x+=keyDir[key][0];z+=keyDir[key][1];}
@@ -555,8 +695,15 @@
     }
     velocity.lerp(desired,ease(x||z?4.5:6.8,dt));
     if(velocity.lengthSq()<.0001) velocity.set(0,0,0);
-    const speed=velocity.length(); location.addScaledVector(velocity,dt);
-    location.y=groundAt(location.x,location.z,groundNormal);
+    const speed=velocity.length();
+    location.addScaledVector(velocity,dt);
+    const surface=groundAt(location.x,location.z,groundNormal);
+    if((mode==='ground'||mode==='jumping') && !Number.isFinite(surface)){
+      startFall();
+      return;
+    }
+    exhibition.constrain(location, mode==='jumping'?airY:surface);
+    location.y=surface;
     // Steer the wheel toward travel. A little sideways slip keeps the two holes visible.
     if(speed>.045){
       let target=Math.atan2(-velocity.z,velocity.x);
@@ -600,28 +747,50 @@
   }
   function view(dt,snap=false){
     followPoint.copy(location);
-    if(mode==='flying'||mode==='landing'){
+    if(mode==='falling'){
+      followPoint.y=airY-.2;
+    }else if(mode==='flying'||mode==='landing'){
       followPoint.y=Math.max(location.y,eight.position.y-.36);
-      if(!drag) orbit.yaw+=wrap(flight.yaw-orbit.yaw)*ease(3.5,dt);
+      if(!drag && (!lookFree || homing)) orbit.yaw+=wrap(flight.yaw-orbit.yaw)*ease(homing?8:3.2,dt);
     }else if(mode==='jumping'){
       followPoint.y+=Math.max(0,eight.position.y-location.y-.32)*.32;
     }
     follow.lerp(followPoint,snap?1:ease(7.5,dt));
     const aspect=camera.aspect;
     const portraitDistance=1.62+printWidth/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2))*aspect*.86);
-    const radius=Math.max(7.6,portraitDistance);
+    const pitTarget=exhibition.interior(location.x,location.z);
+    pitBlend+=(pitTarget-pitBlend)*(snap?1:ease(3.2,dt));
+    const pit=(mode==='ground'||mode==='jumping')?pitBlend:pitBlend*.22;
+    let radius=Math.max(7.6,portraitDistance);
+    radius+=(Math.min(radius,3.65)-radius)*pit;
+    if(pit>.3){
+      const ux=Math.sin(orbit.yaw), uz=Math.cos(orbit.yaw);
+      for(let i=0;i<4;i++){
+        const dist=Math.cos(orbit.pitch)*radius;
+        if(groundAt(follow.x+ux*dist, follow.z+uz*dist)<location.y+.72) break;
+        radius*=.74;
+      }
+    }
     const horizontal=Math.cos(orbit.pitch)*radius;
     gaze.set(follow.x,follow.y+.87,follow.z);
     cameraGoal.set(follow.x+Math.sin(orbit.yaw)*horizontal,gaze.y+Math.sin(orbit.pitch)*radius,follow.z+Math.cos(orbit.yaw)*horizontal);
     camera.position.lerp(cameraGoal,snap?1:ease(17,dt));
     // Raise the eye enough to keep the sight line above any intervening ridge.
-    for(let i=1;i<=8;i++){
+    if(mode!=='falling') for(let i=1;i<=8;i++){
       const t=i/8;
       const x=T.MathUtils.lerp(eight.position.x,camera.position.x,t);
       const z=T.MathUtils.lerp(eight.position.z,camera.position.z,t);
-      const minEye=eight.position.y+(groundAt(x,z)+.11+.37*t-eight.position.y)/t;
-      camera.position.y=Math.max(camera.position.y,minEye);
+      const ground=groundAt(x,z);
+      if(!Number.isFinite(ground)) continue;
+      const minEye=eight.position.y+(ground+.11+.37*t-eight.position.y)/t;
+      if(minEye>camera.position.y){
+        const below=groundAt(camera.position.x,camera.position.z);
+        const mild=Math.max(camera.position.y, (Number.isFinite(below)?below:camera.position.y)+.32);
+        camera.position.y=minEye+(mild-minEye)*pit;
+      }
     }
+    const eyeFloor=groundAt(camera.position.x,camera.position.z);
+    if(mode!=='falling' && Number.isFinite(eyeFloor)) camera.position.y=Math.max(camera.position.y, eyeFloor+.22);
     camera.lookAt(gaze); sky.position.copy(camera.position);
     fields.position.set(Math.round(location.x/fieldWidth)*fieldWidth,0,Math.round(location.z/fieldWidth)*fieldWidth);
     sun.position.copy(location).add(lightOffset);sun.target.position.copy(location);
@@ -629,23 +798,48 @@
   const lightOffset=new T.Vector3(-5.5,9,-4.8);
   function updateCoords(){posX.textContent=(Math.abs(location.x)<.05?0:location.x).toFixed(1);posZ.textContent=(Math.abs(location.z)<.05?0:location.z).toFixed(1);}
   function reset(){
-    clearInput();location.set(0,0,0);velocity.set(0,0,0);orbit.yaw=.20;orbit.pitch=.075;
-    location.y=groundAt(0,0,groundNormal);
+    clearInput();location.set(spawn.x,0,spawn.z);velocity.set(0,0,0);orbit.yaw=.20;orbit.pitch=.075;
+    location.y=groundAt(spawn.x,spawn.z,groundNormal);
     heading=.52;roll=-.13;hop=jumpSpeed=wobble=wobbleSpeed=impactDelay=0;lastLobe=0;wasMoving=false;
     airY=0;verticalSpeed=0;setMode('ground');
     pose();view(0,true);updateCoords();
   }
+  window.STUDIO_TRAVEL=(x,z)=>flyTo(x,z,false);
   document.querySelector('#home').addEventListener('click',returnHome);
   document.querySelector('#home-title').addEventListener('click',returnHome);
   function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();view(0,true);}
   window.addEventListener('resize',resize);resize();reset();
-  let last=performance.now();
+  let last=performance.now(), introArmed=false;
   renderer.setAnimationLoop(now=>{
     const elapsed=Math.min(Math.max((now-last)*.001,0),.07);last=now;
     const steps=Math.max(1,Math.ceil(elapsed/(1/90)));
-    if(!homing&&!paused&&!document.hidden) for(let i=0;i<steps;i++) move(elapsed/steps);
-    updateHomeFog(now);
+    if(mode==='falling' && !cliffFade && now-fallStartedAt>=900) beginCliffFade(now);
+    if(!paused&&!document.hidden && !cliffFade) for(let i=0;i<steps;i++){
+      if(homing) stepHome(elapsed/steps); else move(elapsed/steps);
+    }else if(!paused&&!document.hidden && cliffFade && !cliffFade.placed) fall(elapsed);
+    updateCliffFade(now);
+    if(arrival){
+      const k=Math.min(1,elapsed*2.2);
+      location.x+=(arrival.x-location.x)*k;
+      location.z+=(arrival.z-location.z)*k;
+      location.y=groundAt(location.x,location.z,groundNormal);
+      if(arrival.pose){
+        heading+=wrap(arrival.heading-heading)*k;
+        roll+=wrap(arrival.roll-roll)*k;
+        orbit.yaw+=wrap(arrival.yaw-orbit.yaw)*k;
+        orbit.pitch+=(arrival.pitch-orbit.pitch)*k;
+      }
+      if(Math.hypot(location.x-arrival.x,location.z-arrival.z)<.03&&(!arrival.pose||Math.abs(wrap(arrival.yaw-orbit.yaw))<.02)){
+        location.x=arrival.x; location.z=arrival.z;
+        if(arrival.pose){heading=arrival.heading;roll=arrival.roll;orbit.yaw=arrival.yaw;orbit.pitch=arrival.pitch;}
+        arrival=null;
+      }
+      pose();
+    }
     view(elapsed);if(now-lastUI>110){updateCoords();lastUI=now;}
+    if(sceneReady && !introArmed){introArmed=true; exhibition.armIntro(now);}
+    exhibition.sync(now, location.x, location.z, eight.position.y, camera, held.size>0 || pointerKeys.size>0 || !!drag, document.hidden);
+    previews.update(now, elapsed, location, velocity, camera, document.hidden);
     renderer.render(scene,camera);
     if(sceneReady) canvas.classList.add('ready');
   });

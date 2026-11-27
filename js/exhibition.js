@@ -68,9 +68,9 @@
       const folds = Math.sin(x * 0.077 + 1.12 * Math.cos(z * 0.051)) + Math.sin(z * 0.113 + x * 0.046) * 0.65;
       const grains = 0.17 * Math.cos(x * 0.91 + z * 0.44) * Math.sin(z * 0.95) + 0.34 * Math.sin(z * 0.37 + x * 0.28) * Math.cos(x * 0.42);
       const hillside = 3.4 + 2.9 * folds + grains + (5.5 + 2 * Math.sin(z * 0.24)) * Math.exp(-(Math.max(0, margin - 1) ** 2) / 130);
-      const t = T.MathUtils.smoothstep(shore, 0, 22);
       const north = z >= 0;
-      const raw = shore < 0 ? -1 + Math.max(north ? -15.5 : -3.7, shore * (north ? 0.46 : 0.29)) : mix(-1 + shore * 0.16, hillside, t);
+      const t = T.MathUtils.smoothstep(shore, 0, north ? 34 : 22);
+      const raw = shore < 0 ? -1 + Math.max(north ? -9.2 : -3.7, shore * (north ? 0.2 : 0.29)) : mix(-1 + shore * (north ? 0.09 : 0.16), hillside, t);
       return -1 + (raw + 1) * 0.58;
     }
     const pads = SITES.map(([sx, sz]) => ({sx, sz, y: landform(sx, sz, edges(sz))}));
@@ -80,6 +80,7 @@
       for (let i = 0; i < pads.length; i++) {
         const core = i === 10 ? 42 : padCore;
         const reach = i === 10 ? 64 : padReach;
+        if (i === 6) continue;
         const d = Math.hypot(x - pads[i].sx, z - pads[i].sz);
         if (d >= reach) continue;
         const w = d <= core ? 1 : 1 - smooth(core, reach, d);
@@ -226,12 +227,12 @@
         diffuseColor.a=0.22+light*.2;
         diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.72,.88,.95), uUnder*.55);
         diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);
-        float lakeMask=1.-smoothstep(uLakeR*.2, uLakeR*.95, length(waterXZ-uLake));
+        float lakeMask=1.-smoothstep(uLakeR*.72, uLakeR*1.05, length(waterXZ-uLake));
         float tide=0.5+0.5*sin(p.x*0.16+p.y*0.09-tLake*0.18);
         float tide2=0.5+0.5*sin(p.y*0.055-p.x*0.04+tLake*0.11);
         vec3 wash=mix(uPigment, uPigmentB, tide);
         wash=mix(wash, uPigmentC, tide2*0.65);
-        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*0.72);`);
+        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*0.96);`);
     };
     const waters = lakes.map(lake => {
       const v = [0, waterLevel, lake.z * LAND], idx = [];

@@ -16,13 +16,18 @@
     <button id="full" title="전체 화면" aria-label="전체 화면"><svg viewBox="0 0 24 24"><path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5"/></svg></button>
   </div>
 </header>
-<div id="status" role="status">들판 불러오는 중…</div>
+<div id="status" role="status"><p class="load-mark">Studio 82</p><p class="load-note">loading...</p></div>
 <footer>
   <div class="controls">
-  <div class="desktop-guide">
-    <span class="movement-keys" aria-hidden="true"><kbd class="up">↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></span><span id="steer-hint">이동</span>
-    <i></i>
-    <svg class="mouse" viewBox="0 0 22 26" aria-hidden="true"><rect x="4.5" y="2.5" width="13" height="20" rx="6.5"/><path d="M11 6v4"/></svg><span>드래그로 시점 회전</span>
+  <div class="help">
+    <div id="help-panel" class="help-panel" hidden>
+      <p><span id="steer-hint">이동</span><span>방향키 · WASD</span></p>
+      <p><span>시점</span><span>드래그</span></p>
+      <p><span>점프</span><span>Space</span></p>
+      <p><span>이륙</span><span>Shift</span></p>
+      <p><span>지도</span><span>M</span></p>
+    </div>
+    <button type="button" id="help" aria-expanded="false" aria-controls="help-panel" aria-label="조작 안내" title="조작 안내">?</button>
   </div>
   <div class="touch-guide" aria-label="이동 키">
     <button data-key="ArrowUp" aria-label="앞으로">↑</button><button data-key="ArrowLeft" aria-label="왼쪽으로">←</button><button data-key="ArrowDown" aria-label="뒤로">↓</button><button data-key="ArrowRight" aria-label="오른쪽으로">→</button>

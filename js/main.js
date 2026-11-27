@@ -683,9 +683,13 @@ vec4 stoneCoat(vec2 p){
     drag=null;
     if(tap){
       const work=previews.press(x, y);
-      if(work && !cliffFade && !warp && mode!=='falling' && Math.hypot(location.x-work.x,location.z-work.z)>4){
-        const floor=groundAt(work.x,work.z);
-        if(Number.isFinite(floor)) beginCliffFade(performance.now(), work);
+      if(work && !cliffFade && !warp && mode!=='falling'){
+        const nearPiece=Math.hypot(location.x-(work.lookX??work.x),location.z-(work.lookZ??work.z));
+        const nearSite=Math.hypot(location.x-work.x,location.z-work.z);
+        if(Math.min(nearPiece,nearSite)>16){
+          const floor=groundAt(work.x,work.z);
+          if(Number.isFinite(floor)) beginCliffFade(performance.now(), work);
+        }
       }
     }
   });

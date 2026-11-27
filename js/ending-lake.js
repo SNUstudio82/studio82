@@ -71,8 +71,8 @@
       geometry.setAttribute('position', new T.Float32BufferAttribute([
         x - top, waterLevel - 0.05, z,
         x + top, waterLevel - 0.05, z,
-        x + drift - bottom, -9.2, z - drift,
-        x + drift + bottom, -9.2, z + drift
+        x + drift - bottom, -5.2, z - drift,
+        x + drift + bottom, -5.2, z + drift
       ], 3));
       geometry.setAttribute('uv', new T.Float32BufferAttribute([0, 1, 1, 1, 0, 0, 1, 0], 2));
       geometry.setIndex([0, 2, 1, 1, 2, 3]);
@@ -101,7 +101,7 @@
             float band = 0.5 + 0.5 * sin(vUv.y * 5.5 - seaTime * 0.35 + phase);
             float bandC = 0.5 + 0.5 * sin(vUv.y * 2.4 + seaTime * 0.22 + phase);
             vec3 family = mix(mix(pigment, pigmentB, band), pigmentC, bandC * 0.65);
-            vec3 glow = mix(vec3(0.62, 0.86, 0.96), family, mood * 0.72);
+            vec3 glow = mix(vec3(0.62, 0.86, 0.96), family, mood * 0.94);
             gl_FragColor = vec4(glow, width * fade * fine * below * 0.32);
           }`
       });
@@ -114,7 +114,7 @@
 
     const spot = new T.SpotLight(0xfff3dc, 0, 16, 0.62, 0.55, 1.4);
     spot.position.set(0, waterLevel - 0.12, 0);
-    spot.target.position.set(0, -8.4, 0);
+    spot.target.position.set(0, -4.8, 0);
     group.add(spot, spot.target);
 
     const dustCount = 160;
@@ -123,7 +123,7 @@
       const a = i * 2.399;
       const r = 0.4 + (i % 10) * 0.42;
       dust[i * 3] = Math.cos(a) * r;
-      dust[i * 3 + 1] = waterLevel - 0.4 - (i % 18) * 0.42;
+      dust[i * 3 + 1] = waterLevel - 0.4 - (i % 12) * 0.32;
       dust[i * 3 + 2] = Math.sin(a) * r;
     }
     const dustGeometry = new T.BufferGeometry();
@@ -707,7 +707,7 @@ vec3 articulateSea(vec3 original){
           pearlDyed = mix(early, late, along);
           pearlDyed = mix(pearlDyed, bodyDyeD, across * 0.22);
           vec3 inkColor = pearlPigment.rgb;
-          float depth = smoothstep(0.06, 0.4, ink) * mix(0.82, 1.0, bodyDyed);
+          float depth = smoothstep(0.12, 0.7, ink) * bodyDyed;
           diffuseColor.rgb = mix(vec3(0.99, 0.98, 0.96), pearlDyed, bodyDyed);
           diffuseColor.rgb = mix(diffuseColor.rgb, inkColor, depth);
           diffuseColor.a = mix(diffuseColor.a, 0.82, bodyDyed * 0.75);
@@ -721,7 +721,7 @@ vec3 articulateSea(vec3 original){
           vec3 inkGlow = pearlPigment.rgb;
           totalEmissiveRadiance += inkGlow * clamp(pearlPigment.a, 0.0, 1.0) * bodyDyed * 1.05;`);
       };
-      material.customProgramCacheKey = () => 'ending-spine-v20-' + kind + (fin ? '-fin' : '');
+      material.customProgramCacheKey = () => 'ending-spine-v21-' + kind + (fin ? '-fin' : '');
       return material;
     }
 
@@ -902,7 +902,7 @@ vec3 articulateSea(vec3 original){
         goal.x = dx / dist * limit;
         goal.z = lakeZ + dz / dist * limit;
       }
-      goal.y = Math.min(waterLevel - 0.5, Math.max(-8.4, goal.y));
+      goal.y = Math.min(waterLevel - 0.5, Math.max(-5.2, goal.y));
       clearStone(goal, bulk || 0.7);
     }
 
@@ -920,8 +920,8 @@ vec3 articulateSea(vec3 original){
       goal.z += Math.cos(time * 0.11 + fish.phase) * 0.28;
       const dx = goal.x - bodyX, dz = goal.z - bodyZ;
       const dist = Math.hypot(dx, dz);
-      if (dist < 1.7) {
-        const scale = dist < 0.001 ? 1.7 : 1.7 / dist;
+      if (dist < 4.4) {
+        const scale = dist < 0.001 ? 4.4 : 4.4 / dist;
         goal.x = bodyX + dx * scale;
         goal.z = bodyZ + dz * scale;
       }
@@ -1209,7 +1209,7 @@ vec3 articulateSea(vec3 original){
       }
       if (waterMood.amount.value > 0.001) {
         moodMid.copy(waterMood.color.value).lerp(waterMood.colorB.value, 0.5).lerp(waterMood.colorC.value, 0.33);
-        scene.fog.color.lerp(moodMid, waterMood.amount.value * grade * 0.48);
+        scene.fog.color.lerp(moodMid, waterMood.amount.value * grade * 0.68);
       }
     }
 
@@ -1247,7 +1247,7 @@ vec3 articulateSea(vec3 original){
       const below = camera ? 1 - T.MathUtils.smoothstep(camera.position.y, waterLevel - 0.72, waterLevel - 0.04) : 0;
       belowUniform.value = below;
       spot.position.set(lx, waterLevel - 0.12, lz);
-      spot.target.position.set(lx, -8.4, lz);
+      spot.target.position.set(lx, -4.8, lz);
       spot.intensity = reveal * below * 7.5;
       rig.position.set(lx, 0, lz);
       ensure();
@@ -1269,26 +1269,11 @@ vec3 articulateSea(vec3 original){
         drawWake(time);
         return;
       }
-      if (glide) {
-        for (const school of schoolGroups) {
-          const near = Math.hypot(school.center.x - lx, school.center.z - lz);
-          const pull = 1 - T.MathUtils.smoothstep(near, 3.2, 12);
-          if (pull <= 0) continue;
-          school.center.x += moveX * pull;
-          school.center.z += moveZ * pull;
-          school.goal.x += moveX * pull;
-          school.goal.z += moveZ * pull;
-          if (lift) {
-            school.center.y += moveY * pull;
-            school.goal.y += moveY * pull;
-          }
-        }
-      }
       for (const school of schoolGroups) {
         const awayX = school.center.x - lx, awayZ = school.center.z - lz;
         const away = Math.hypot(awayX, awayZ);
-        if (away < 1.85) {
-          const scale = away < 0.2 ? 1.85 : 1.85 / away;
+        if (away < 5) {
+          const scale = away < 0.2 ? 5 : 5 / away;
           school.goal.set(lx + awayX * scale, school.center.y, lz + awayZ * scale);
         } else if (school.center.distanceTo(school.goal) < 1.8) placeGroup(school);
         scratch.copy(school.goal).sub(school.center);
@@ -1326,29 +1311,26 @@ vec3 articulateSea(vec3 original){
           fish.dyeB.lerp(dyeColourB, 1 - Math.exp(-dt * 1.4));
           fish.dyeC.lerp(dyeColourC, 1 - Math.exp(-dt * 1.4));
           fish.dyeD.lerp(dyeColourD, 1 - Math.exp(-dt * 1.4));
-          fish.dyed = Math.max(fish.dyed, Math.min(1, fish.meet / MEET_SECONDS));
+          const meetT = Math.min(1, fish.meet / MEET_SECONDS);
+          fish.dyed = Math.max(fish.dyed, meetT * meetT * (3 - 2 * meetT));
           const q = fish.object.quaternion;
           const fx = 1 - 2 * (q.y * q.y + q.z * q.z);
           const fy = 2 * (q.x * q.y + q.w * q.z);
           const fz = 2 * (q.x * q.z - q.w * q.y);
           const tail = Math.max(0.22, fish.object.children[0] ? fish.object.children[0].scale.x : 1) * 0.52;
-          noteWake(fish.position.x - fx * tail, fish.position.y - fy * tail * 0.45, fish.position.z - fz * tail, time, wash, fish.index);
           noteWake(lx, bodyY + 0.15, lz, time, wash, 1000 + fish.index);
+          if (fish.state === 'near') noteWake(fish.position.x - fx * tail, fish.position.y - fy * tail * 0.45, fish.position.z - fz * tail, time, wash, fish.index);
           if (fish.state === 'near' && fish.meet >= MEET_SECONDS) depart(fish, time);
         }
-        if (glide) {
-          const stuck = fish === visitor && fish.state !== 'return';
-          const besideNow = Math.hypot(fish.position.x - lx, fish.position.z - lz);
-          const pull = stuck ? 1 : 1 - T.MathUtils.smoothstep(besideNow, 2.6, 11);
-          if (pull > 0) {
-            fish.position.x += moveX * pull;
-            fish.position.z += moveZ * pull;
-            if (lift || stuck) fish.position.y += moveY * pull;
-          }
+        if (glide && fish === visitor && fish.state !== 'return') {
+          fish.position.x += moveX;
+          fish.position.z += moveZ;
+          if (lift || fish.state === 'near' || fish.state === 'approach') fish.position.y += moveY;
         }
         if (fish === visitor && fish.state !== 'return') {
-          const spin = time * 0.16 + fish.phase;
-          goal.set(lx + Math.cos(spin) * 0.78, Math.min(waterLevel - 0.42, bodyY + 0.16), lz + Math.sin(spin) * 0.78);
+          const spin = time * 1.7 + fish.phase;
+          const orbit = fish.state === 'near' ? 1.28 : 0.9;
+          goal.set(lx + Math.cos(spin) * orbit, Math.min(waterLevel - 0.42, bodyY + 0.08 + Math.sin(spin * 2) * 0.16), lz + Math.sin(spin) * orbit);
           clampLake(fish.bulk);
         } else {
           schoolGoal(time, fish, lx, lz);
@@ -1371,19 +1353,25 @@ vec3 articulateSea(vec3 original){
           fish.velocity.set(0, 0, 0);
           fish.placed = true;
         }
+        const circling = fish === visitor && fish.state === 'near';
         scratch.copy(goal).sub(fish.position);
         const length = scratch.length();
-        const maxSpeed = fish.state === 'approach' ? 1.15 : fish.state === 'return' ? 0.72 : fish.state === 'near' ? 0.26 : 0.38;
+        const maxSpeed = fish.state === 'approach' ? 1.15 : fish.state === 'return' ? 0.72 : circling ? 2.4 : 0.38;
         if (length > 0.001) scratch.multiplyScalar(Math.min(length, maxSpeed) / length);
         else scratch.set(0, 0, 0);
-        const response = fish.state === 'school' ? 0.55 : fish.state === 'approach' ? 1.5 : 0.9;
+        const response = fish.state === 'school' ? 0.55 : fish.state === 'approach' ? 1.5 : circling ? 6 : 0.9;
         fish.velocity.lerp(scratch, 1 - Math.exp(-dt * response));
-        fish.position.addScaledVector(fish.velocity, dt);
+        if (circling) fish.position.copy(goal);
+        else fish.position.addScaledVector(fish.velocity, dt);
+        if (circling && dt > 0) {
+          const tangent = 1.7 * 1.28;
+          fish.velocity.set(-Math.sin(time * 1.7 + fish.phase) * tangent, fish.velocity.y, Math.cos(time * 1.7 + fish.phase) * tangent);
+        }
         clearStone(fish.position, fish.bulk || 0.7);
         if (fish.velocity.lengthSq() > 0.0004) {
           heading.copy(fish.velocity).normalize();
           aim.setFromUnitVectors(forward, heading);
-          fish.object.quaternion.slerp(aim, 1 - Math.exp(-dt * 1.1));
+          fish.object.quaternion.slerp(aim, 1 - Math.exp(-dt * (circling ? 8 : 1.1)));
         }
         if (fish.state === 'approach' && length < 0.7) fish.state = 'near';
         if (fish.state === 'return' && length < 1.1) fish.state = 'school';
@@ -1391,7 +1379,7 @@ vec3 articulateSea(vec3 original){
         for (const material of fish.materials) {
           material.opacity = fade * (material.userData.baseOpacity + fish.dyed * 0.26);
           material.color.copy(material.userData.restColor).lerp(fish.dye, fish.dyed);
-          material.emissive.copy(fish.dye);
+          material.emissive.copy(material.userData.restColor).lerp(fish.dye, fish.dyed);
           material.userData.bodyDye.value.copy(fish.dye);
           material.userData.bodyDyeB.value.copy(fish.dyeB);
           material.userData.bodyDyeC.value.copy(fish.dyeC);
@@ -1407,7 +1395,7 @@ vec3 articulateSea(vec3 original){
         moodTargetB.copy(dyeColourB);
         moodTargetC.copy(dyeColourC);
         const depth = visitor ? visitor.dyed : waterMood.amount.value;
-        waterMood.amount.value += (depth - waterMood.amount.value) * (1 - Math.exp(-dt * 0.7));
+        waterMood.amount.value += (depth - waterMood.amount.value) * (1 - Math.exp(-dt * 1.45));
       } else waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * 0.06);
       waterMood.color.value.lerp(moodTarget, 1 - Math.exp(-dt * 1.6));
       waterMood.colorB.value.lerp(moodTargetB, 1 - Math.exp(-dt * 1.6));

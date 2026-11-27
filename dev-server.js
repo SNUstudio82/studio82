@@ -14,7 +14,9 @@ const types = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.json': 'application/json; charset=utf-8'
+  '.json': 'application/json; charset=utf-8',
+  '.webm': 'video/webm',
+  '.glb': 'model/gltf-binary'
 };
 
 function openBrowser(url) {

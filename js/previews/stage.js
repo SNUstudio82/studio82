@@ -20,11 +20,14 @@
     let started = false;
     let engaged = null;
 
-    function blankPlate() {
+    function blankPlate(work) {
       return new T.MeshBasicMaterial({
-        color: 0xd9d3c8,
+        color: work.media ? 0xffffff : 0xd9d3c8,
         transparent: true,
-        depthWrite: true,
+        opacity: work.media ? 0 : 1,
+        depthWrite: !work.media,
+        alphaTest: work.media ? 0.005 : 0,
+        toneMapped: !work.media,
         side: T.DoubleSide
       });
     }
@@ -34,20 +37,41 @@
       const group = new T.Group();
       group.name = 'preview-' + work.id;
       const afloat = work.y < -0.4;
-      group.position.set(afloat ? work.x : work.x - 1.55, work.y, afloat ? work.z : work.z + 0.15);
+      group.position.set(
+        work.kind === 'model' ? work.x - 3.6 : afloat ? work.x : work.x - 1.55,
+        work.y,
+        work.kind === 'model' ? work.z - 2.2 : afloat ? work.z : work.z + 0.15
+      );
       let mesh;
       let material;
-      if (work.kind === 'solid') {
+      if (work.kind === 'model') {
+        mesh = new T.Group();
+        mesh.userData.height = 5.3;
+        api.loadSculpture(T, work.model).then(model => {
+          model.rotation.y = 0.4;
+          model.position.y -= 0.02;
+          model.traverse(part => {
+            if (part.isMesh) part.userData.preview = work.id;
+          });
+          mesh.userData.height = model.userData.height || 27;
+          mesh.add(model);
+          root.STUDIO_CLING = api.makeCling(T, model);
+        }).catch(error => console.warn(error));
+      } else if (work.kind === 'solid') {
         const color = new T.Color().setStyle('hsl(' + ((work.id * 47) % 360) + ' 28% 42%)');
         material = new T.MeshStandardMaterial({color, roughness: 0.72, metalness: 0.02});
         mesh = new T.Mesh(new T.BoxGeometry(0.62, 0.78 + (work.id % 3) * 0.08, 0.62), material);
         mesh.position.y = 0.5;
         mesh.castShadow = true;
       } else {
-        material = blankPlate();
-        mesh = new T.Mesh(new T.PlaneGeometry(1.42, 1.02), material);
-        mesh.position.y = 0.72;
+        material = blankPlate(work);
+        const plateWidth = 5.68;
+        const plateHeight = work.aspect ? plateWidth / work.aspect : plateWidth * (1.02 / 1.42);
+        mesh = new T.Mesh(new T.PlaneGeometry(plateWidth, plateHeight), material);
+        const foot = work.id === 7 ? 3.05 : 0.45;
+        mesh.position.y = plateHeight * 0.5 + foot;
         mesh.rotation.y = Math.PI;
+        if (work.media) mesh.renderOrder = 3;
       }
       mesh.name = 'preview-hit-' + work.id;
       mesh.userData.preview = work.id;
@@ -58,9 +82,10 @@
 
     cache.onEvict(key => {
       const item = items.find(entry => entry.bound === key);
-      if (!item || item.work.kind === 'solid') return;
+      if (!item || item.work.kind === 'solid' || item.work.kind === 'model') return;
       item.material.map = null;
-      item.material.color.set(0xd9d3c8);
+      item.material.color.set(item.work.media ? 0xffffff : 0xd9d3c8);
+      item.material.opacity = item.work.media ? 0 : 1;
       item.material.needsUpdate = true;
       item.bound = null;
       item.tier = null;
@@ -77,14 +102,15 @@
       item.tier = tier;
       if (asset.texture) {
         item.material.map = asset.texture;
-        item.material.color.set(tier === 'high' ? 0xffffff : 0xb9b3aa);
+        item.material.color.set(item.work.media || tier === 'high' ? 0xffffff : 0xb9b3aa);
+        item.material.opacity = 1;
         item.material.needsUpdate = true;
       }
       return true;
     }
 
     function projectedPixels(item, camera) {
-      const height = item.work.kind === 'solid' ? 0.9 : 1.02;
+      const height = item.mesh.userData.height || item.mesh.geometry?.parameters?.height || 0.9;
       const dist = Math.max(0.8, camera.position.distanceTo(item.group.position));
       const fov = camera.fov * Math.PI / 180;
       return height / (2 * Math.tan(fov / 2) * dist) * (opts.canvas.clientHeight || 1);
@@ -105,19 +131,39 @@
         pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(pointer, opts.camera);
-        const hits = raycaster.intersectObjects(items.map(item => item.mesh), false);
-        engaged = hits.length ? items.find(item => item.work.id === hits[0].object.userData.preview) || null : null;
+        const hits = raycaster.intersectObjects(items.map(item => item.group), true);
+        engaged = null;
+        if (hits.length) {
+          let obj = hits[0].object;
+          while (obj) {
+            if (obj.userData && obj.userData.preview) {
+              engaged = items.find(item => item.work.id === obj.userData.preview) || null;
+              break;
+            }
+            obj = obj.parent;
+          }
+        }
+        if (!engaged) return null;
+        return {
+          x: engaged.work.x,
+          z: engaged.work.z,
+          lookX: engaged.group.position.x,
+          lookZ: engaged.group.position.z
+        };
       },
       arm() {
         started = true;
         loads.arm();
       },
       update(now, dt, location, velocity, camera, hidden) {
-        if (hidden) return;
+        if (hidden) {
+          for (const item of items) cache.get(item.work.id + ':high')?.setPlaying?.(false);
+          return;
+        }
         for (const item of items) {
           item.dist = Math.hypot(item.work.x - location.x, item.work.z - location.z);
           item.pixels = projectedPixels(item, camera);
-          if (item.work.kind !== 'solid') {
+          if (item.work.kind !== 'solid' && item.work.kind !== 'model') {
             item.group.lookAt(camera.position.x, item.group.position.y, camera.position.z);
           }
         }
@@ -126,8 +172,8 @@
         const sharp = !!(focus && (focus === engaged || focus.pixels >= SHARP_PIXELS));
         for (const item of items) {
           const playing = item === focus && (item.dist < PLAY || item === engaged);
-          if (item.work.kind === 'solid') {
-            if (playing) item.mesh.rotation.y += dt * 0.7;
+          if (item.work.kind === 'solid' || item.work.kind === 'model') {
+            if (playing && item.work.kind === 'solid') item.mesh.rotation.y += dt * 0.7;
             continue;
           }
           const want = sharp && item === focus ? 'high' : 'low';
@@ -135,6 +181,9 @@
           if (cache.has(item.work.id + ':' + tier)) {
             if (item.tier !== tier) bind(item, tier);
             else if (item.bound) cache.touch(item.bound);
+          }
+          if (item.work.media) {
+            cache.get(item.work.id + ':high')?.setPlaying?.(playing && item.tier === 'high');
           }
           if (playing && item.work.kind === 'clip' && item.tier === 'high') {
             const asset = cache.get(item.work.id + ':high');
@@ -146,7 +195,7 @@
         }
         if (!started) return;
         const speed = Math.hypot(velocity.x, velocity.z);
-        const missing = item => item.work.kind !== 'solid' && !cache.has(item.work.id + ':low') && !loads.queued(item.work.id + ':low');
+        const missing = item => item.work.kind !== 'solid' && item.work.kind !== 'model' && !cache.has(item.work.id + ':low') && !loads.queued(item.work.id + ':low');
         let ahead = [];
         if (speed > 0.35) {
           const vx = velocity.x / speed, vz = velocity.z / speed;
@@ -159,7 +208,7 @@
           ahead = items.filter(item => missing(item) && item.dist < 70).sort((a, b) => a.dist - b.dist).slice(0, 1);
         }
         for (const item of ahead) loads.request(item.work, 'low', item.dist);
-        if (sharp && focus && focus.work.kind !== 'solid' && !cache.has(focus.work.id + ':high')) {
+        if (sharp && focus && focus.work.kind !== 'solid' && focus.work.kind !== 'model' && !cache.has(focus.work.id + ':high')) {
           loads.request(focus.work, 'high', focus.dist);
         }
       }

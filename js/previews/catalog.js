@@ -9,17 +9,25 @@
   const HIGH = 256;
 
   function describe(mount) {
-    const kind = KINDS[(mount.id - 1) % KINDS.length];
-    const plate = kind !== 'solid';
+    const ending = mount.id === 7;
+    const sculpture = mount.id === 11;
+    const kind = ending ? 'clip' : sculpture ? 'model' : KINDS[(mount.id - 1) % KINDS.length];
+    const plate = kind !== 'solid' && kind !== 'model';
     return {
       id: mount.id,
       kind,
+      aspect: ending ? 16 / 9 : null,
+      media: ending ? {
+        poster: root.studioAssets?.['work-07-ending-poster.png'] || './assets/work-07-ending-poster.png',
+        clip: root.studioAssets?.['work-07-ending.webm'] || './assets/work-07-ending.webm'
+      } : null,
+      model: sculpture ? (root.studioAssets?.['wood&steel.glb'] || './wood%26steel.glb') : null,
       x: mount.x,
       z: mount.z,
       y: mount.y,
       tiers: {
-        low: {size: plate ? LOW : 0, bytes: plate ? LOW * LOW * 4 : 4096},
-        high: {size: plate ? HIGH : 0, bytes: plate ? HIGH * HIGH * 4 : 16384}
+        low: ending ? {size: 160, bytes: 160 * 90 * 4} : {size: plate ? LOW : 0, bytes: plate ? LOW * LOW * 4 : 4096},
+        high: ending ? {size: 512, bytes: 512 * 288 * 4} : {size: plate ? HIGH : 0, bytes: plate ? HIGH * HIGH * 4 : 16384}
       }
     };
   }

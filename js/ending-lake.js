@@ -48,8 +48,10 @@
     const belowUniform = {value: 0};
     const waterMood = options.waterMood || {color: {value: new T.Color(0x7eb8c6)}, colorB: {value: new T.Color(0x9ec9cf)}, amount: {value: 0}};
     if (!waterMood.colorB) waterMood.colorB = {value: waterMood.color.value.clone()};
+    if (!waterMood.colorC) waterMood.colorC = {value: waterMood.color.value.clone()};
     const moodTarget = waterMood.color.value.clone();
     const moodTargetB = waterMood.colorB.value.clone();
+    const moodTargetC = waterMood.colorC.value.clone();
     const moodMid = new T.Color();
     const rig = new T.Group();
     rig.name = 'ending-lake';
@@ -79,7 +81,7 @@
         blending: T.AdditiveBlending, toneMapped: false, fog: false,
         uniforms: {
           seaTime: swimTime, phase: {value: i * 1.37}, below: belowUniform,
-          pigment: waterMood.color, pigmentB: waterMood.colorB, mood: waterMood.amount
+          pigment: waterMood.color, pigmentB: waterMood.colorB, pigmentC: waterMood.colorC, mood: waterMood.amount
         },
         vertexShader: `
           varying vec2 vUv; uniform float seaTime; uniform float phase;
@@ -91,13 +93,15 @@
           }`,
         fragmentShader: `
           varying vec2 vUv; uniform float seaTime; uniform float phase; uniform float below;
-          uniform vec3 pigment; uniform vec3 pigmentB; uniform float mood;
+          uniform vec3 pigment; uniform vec3 pigmentB; uniform vec3 pigmentC; uniform float mood;
           void main() {
             float width = pow(max(0.0, 1.0 - abs(vUv.x - 0.5) * 2.0), 1.65);
             float fade = smoothstep(0.0, 0.16, vUv.y) * pow(vUv.y, 0.62);
             float fine = 0.62 + 0.38 * sin(seaTime * 1.3 + vUv.y * 7.0 + phase);
             float band = 0.5 + 0.5 * sin(vUv.y * 5.5 - seaTime * 0.35 + phase);
-            vec3 glow = mix(vec3(0.62, 0.86, 0.96), mix(pigment, pigmentB, band), mood);
+            float bandC = 0.5 + 0.5 * sin(vUv.y * 2.4 + seaTime * 0.22 + phase);
+            vec3 family = mix(mix(pigment, pigmentB, band), pigmentC, bandC * 0.65);
+            vec3 glow = mix(vec3(0.62, 0.86, 0.96), family, mood * 0.72);
             gl_FragColor = vec4(glow, width * fade * fine * below * 0.32);
           }`
       });
@@ -182,6 +186,7 @@
     wakeMesh.renderOrder = 6;
     group.add(wakeMesh);
     const wakeColour = new T.Color();
+    const wakeEdge = new T.Color();
 
     const fishes = [];
     const schoolGroups = [];
@@ -195,6 +200,8 @@
     const tintColor = new T.Color();
     const dyeColour = new T.Color();
     const dyeColourB = new T.Color();
+    const dyeColourC = new T.Color();
+    const dyeColourD = new T.Color();
     const MEET_SECONDS = 24;
     let loading = false;
     let failed = false;
@@ -206,6 +213,7 @@
     let hasPrev = false;
     let prevX = 0;
     let prevZ = 0;
+    let prevY = 0;
     const mood = {ready: false};
     const underFog = new T.Color(0x1a5260);
     const underSun = new T.Color(0xd4f0f8);
@@ -280,12 +288,32 @@ vec3 articulateSea(vec3 original){
       return {head: FISH_GLSL, body: 'transformed=articulateFish(transformed);'};
     }
 
-    // Lifted pairs from the ending's colour combinations. Each fish stays inside one pair.
+    // Each fish keeps one harmony. The five stops are ordered so lines and the body can grade through them.
     const PALETTES = [
-      ['#00908a', '#5a82b3', '#3d8f9a', '#d8f4ef'],
-      ['#a36aa5', '#c0a9b3', '#005b8d', '#f3e6ee'],
-      ['#96d1aa', '#b5decc', '#34454c', '#e9f8f0'],
-      ['#fdc57e', '#9a72aa', '#b6bfc1', '#fff3dc']
+      ['#f2b48e', '#f0a8c0', '#d7b4e6', '#b9c6f0', '#f7ead8'],
+      ['#f6c0a4', '#f0a8b0', '#d9a8cc', '#c4b6e4', '#e8e4f6'],
+      ['#f3e2a0', '#f6c8a4', '#f3b8c8', '#e4c8ee', '#fbf4e6'],
+      ['#e7e6a4', '#c9d6a8', '#b7e2c8', '#b7d4f0', '#e4eef8'],
+      ['#d4e6a8', '#b9e0c8', '#b4ddd8', '#c4d0f0', '#dcc8ee'],
+      ['#bfe6d0', '#b7d6f2', '#d0c4ee', '#f0b8cc', '#f6d0b4'],
+      ['#c9d4b4', '#e6d4b0', '#f0d8a4', '#f0c0c8', '#dcc8e6'],
+      ['#b8e4dc', '#c8e4f2', '#c8c8ee', '#e0b4d0', '#f6eee4'],
+      ['#b9d6f4', '#c4e6d4', '#eee6a8', '#f6c8b0', '#f0b4c4'],
+      ['#f0b0a8', '#f6c8a8', '#f0e4a8', '#d0dcb4', '#c4e6d4'],
+      ['#f0b0c4', '#d8bce8', '#c4d4f4', '#c8e6d8', '#f8f2ea'],
+      ['#d8b0cc', '#c4c8ee', '#b8e0d4', '#ead8a8', '#f4c8c4'],
+      ['#c8b4e0', '#f0b8cc', '#f6d0b4', '#f0e6b0', '#d4e0c0'],
+      ['#c8e2f4', '#d4c8ee', '#f6c8d8', '#f6c8a8', '#ead8c0'],
+      ['#d8e6a4', '#c4e6cc', '#c0d8f4', '#d0c4ee', '#f0c0cc'],
+      ['#e8b8a8', '#ead4bc', '#d8c4e8', '#c8d0f2', '#d4e8f4'],
+      ['#e8b0c0', '#dcb4d0', '#f0e4b0', '#d4e6b8', '#c4d8f2'],
+      ['#b8e0d8', '#eee8b0', '#f6d0b8', '#d8c4ec', '#eee8f6'],
+      ['#c8c4e6', '#f0b8c8', '#f4c8a8', '#f6eee0', '#d4e0c4'],
+      ['#f4b4bc', '#f0d8a4', '#c8e4cc', '#c4cef0', '#dcc8ea'],
+      ['#e8c0b4', '#ead4a4', '#c8daf2', '#c4e4d8', '#dcc8e8'],
+      ['#dcb8e0', '#f0e6b4', '#f4c0b4', '#c8e6d4', '#d4e8f4'],
+      ['#d0dcb8', '#ead8bc', '#f4c8cc', '#c8d0ee', '#f6f2ea'],
+      ['#f4c8a4', '#f0b8c4', '#d8c0ea', '#c4d6f4', '#c8e6d6']
     ];
 
     function resample(points) {
@@ -295,7 +323,7 @@ vec3 articulateSea(vec3 original){
       });
       const total = lengths.reduce((sum, n) => sum + n, 0);
       if (total < 1e-8) return points;
-      const count = Math.max(48, Math.min(72, Math.ceil(total / 4.2)));
+      const count = Math.max(56, Math.min(96, Math.ceil(total / 3.2)));
       const output = [];
       let segment = 0, start = 0;
       for (let i = 0; i < count; i++) {
@@ -335,16 +363,16 @@ vec3 articulateSea(vec3 original){
         }
         remesh();
       }
-      function drop(centre, radius, paint, clear, mate) {
+      function drop(centre, radius, paint, clear, mate, stops) {
         expand(centre, radius * radius);
-        const count = Math.max(48, Math.min(72, Math.ceil(radius * 2.6)));
+        const count = Math.max(56, Math.min(96, Math.ceil(radius * 2.2)));
         const points = [];
         for (let i = 0; i < count; i++) {
           const angle = i / count * Math.PI * 2;
           points.push({x: centre.x + Math.cos(angle) * radius, y: centre.y + Math.sin(angle) * radius});
         }
-        regions.push({paint, mate: mate || paint, clear, points});
-        if (regions.length > 14) regions.shift();
+        regions.push({paint, mate: mate || paint, stops: stops || null, clear, points});
+        if (regions.length > 18) regions.shift();
       }
       function stroke(from, to, width) {
         const dx = to.x - from.x, dy = to.y - from.y, distance = Math.hypot(dx, dy);
@@ -525,6 +553,17 @@ vec3 articulateSea(vec3 original){
       return [curve];
     }
 
+    function deepenInk(color, amount) {
+      const tone = {h: 0, s: 0, l: 0};
+      color.getHSL(tone);
+      color.setHSL(
+        tone.h,
+        Math.min(0.84, tone.s + (0.76 - tone.s) * amount),
+        Math.max(0.3, tone.l - (tone.l - 0.4) * amount)
+      );
+      return color;
+    }
+
     function drawInk(ink) {
       const ctx = ink.ctx;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -538,9 +577,12 @@ vec3 articulateSea(vec3 original){
       ctx.clip();
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
-      for (const region of ink.field.regions) {
+      ink.field.regions.forEach((region, regionIndex) => {
         const points = region.points;
-        if (points.length < 3) continue;
+        if (points.length < 3) return;
+        const stops = region.stops && region.stops.length > 1 ? region.stops : [region.paint, region.mate || ink.palette[1], ink.palette[Math.min(2, ink.palette.length - 1)]];
+        const from = stops[0];
+        const toward = stops[2] || stops[stops.length - 1];
         trace(ctx, points);
         if (region.clear) {
           ctx.globalCompositeOperation = 'destination-out';
@@ -549,32 +591,37 @@ vec3 articulateSea(vec3 original){
           ctx.fill();
           ctx.globalCompositeOperation = 'source-over';
         } else {
-          let minX = 256, minY = 256, maxX = 0, maxY = 0;
-          for (const p of points) {
-            if (p.x < minX) minX = p.x;
-            if (p.y < minY) minY = p.y;
-            if (p.x > maxX) maxX = p.x;
-            if (p.y > maxY) maxY = p.y;
-          }
-          const fill = ctx.createLinearGradient(minX, minY, maxX, maxY);
-          fill.addColorStop(0, region.paint);
-          fill.addColorStop(0.55, region.mate || region.paint);
-          fill.addColorStop(1, region.paint);
+          wakeColour.set(from);
+          if (toward) wakeColour.lerp(wakeEdge.set(toward), 0.45);
+          deepenInk(wakeColour, 0.28);
           ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = fill;
+          ctx.globalAlpha = 0.42;
+          ctx.fillStyle = '#' + wakeColour.getHexString();
           ctx.fill();
         }
         ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = region.paint || ink.palette[0];
-        ctx.globalAlpha = 1;
-        ctx.lineWidth = 2.6;
-        ctx.stroke();
-        ctx.strokeStyle = ink.palette[3];
-        ctx.globalAlpha = 1;
-        ctx.lineWidth = 0.85;
-        ctx.stroke();
-      }
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        const count = points.length;
+        const voice = 0.5 + 0.5 * Math.sin(regionIndex * 2.15 + 0.6);
+        for (let i = 0; i < count; i++) {
+          const p = points[i], q = points[(i + 1) % count], r = points[(i + 2) % count];
+          const along = i / count;
+          const swell = 0.5 + 0.5 * Math.sin(along * Math.PI * 1.65 + regionIndex * 0.9);
+          const flutter = 0.5 + 0.5 * Math.sin(along * Math.PI * 5.4 + regionIndex * 1.7);
+          const breadth = swell * 0.7 + flutter * 0.3;
+          wakeColour.set(from);
+          if (toward) wakeColour.lerp(wakeEdge.set(toward), swell * 0.7);
+          deepenInk(wakeColour, 0.62);
+          ctx.beginPath();
+          ctx.moveTo((p.x + q.x) / 2, (p.y + q.y) / 2);
+          ctx.quadraticCurveTo(q.x, q.y, (q.x + r.x) / 2, (q.y + r.y) / 2);
+          ctx.strokeStyle = '#' + wakeColour.getHexString();
+          ctx.globalAlpha = 1;
+          ctx.lineWidth = 0.8 + voice * 1.5 + breadth * (2.1 + voice * 6.8);
+          ctx.stroke();
+        }
+      });
       ctx.globalCompositeOperation = 'source-over';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -582,17 +629,17 @@ vec3 articulateSea(vec3 original){
         for (const curve of habit.curves) {
           for (let i = 1; i < curve.length; i++) {
             const a = curve[i - 1], b = curve[i];
-            const width = Math.max(0.55, (a.weight + b.weight) * 1.15);
+            const swell = 0.5 + 0.5 * Math.sin(i * 0.48 + habit.curves.length);
+            const voice = 0.5 + 0.5 * Math.sin(habit.curves.length * 1.8);
+            wakeColour.set(habit.color);
+            if (habit.edge) wakeColour.lerp(wakeEdge.set(habit.edge), swell * 0.7);
+            deepenInk(wakeColour, 0.62);
             ctx.beginPath();
             ctx.moveTo(a.x * 256, a.y * 256);
             ctx.lineTo(b.x * 256, b.y * 256);
-            ctx.strokeStyle = habit.color;
-            ctx.globalAlpha = 0.88;
-            ctx.lineWidth = width;
-            ctx.stroke();
-            ctx.strokeStyle = ink.palette[3];
-            ctx.globalAlpha = 0.8;
-            ctx.lineWidth = Math.max(0.28, width * 0.35);
+            ctx.strokeStyle = '#' + wakeColour.getHexString();
+            ctx.globalAlpha = 1;
+            ctx.lineWidth = 0.9 + voice * 1.2 + swell * (1.8 + voice * 5.4);
             ctx.stroke();
           }
         }
@@ -611,6 +658,8 @@ vec3 articulateSea(vec3 original){
       material.userData.restColor = material.color.clone();
       material.userData.bodyDye = {value: material.color.clone()};
       material.userData.bodyDyeB = {value: material.color.clone()};
+      material.userData.bodyDyeC = {value: material.color.clone()};
+      material.userData.bodyDyeD = {value: material.color.clone()};
       material.userData.bodyDyed = {value: 0};
       material.transparent = true;
       material.depthWrite = false;
@@ -629,33 +678,50 @@ vec3 articulateSea(vec3 original){
         shader.uniforms.patternMap = patternSlot;
         shader.uniforms.bodyDye = material.userData.bodyDye;
         shader.uniforms.bodyDyeB = material.userData.bodyDyeB;
+        shader.uniforms.bodyDyeC = material.userData.bodyDyeC;
+        shader.uniforms.bodyDyeD = material.userData.bodyDyeD;
         shader.uniforms.bodyDyed = material.userData.bodyDyed;
+        shader.uniforms.dyeFlip = {value: kind === 'whale' ? -1 : 1};
         shader.vertexShader = 'uniform float swimTime; uniform float swimPhase; uniform float swimSpan;\nvarying vec3 vPearlLocal; varying vec3 vPearlN; varying vec3 vPearlView; varying vec3 vPearlNView;\n' + swim.head + '\n' + shader.vertexShader;
         shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvPearlLocal=position;\nvPearlN=normal;\n' + swim.body);
         shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\nvPearlView=normalize(mvPosition.xyz);\nvPearlNView=normalize(normalMatrix*vPearlN);');
-        shader.fragmentShader = 'varying vec3 vPearlLocal; varying vec3 vPearlN; varying vec3 vPearlView; varying vec3 vPearlNView; uniform sampler2D patternMap; uniform vec3 bodyDye; uniform vec3 bodyDyeB; uniform float bodyDyed; uniform float swimTime; uniform float swimPhase;\nvec4 pearlPigment = vec4(0.0); vec3 pearlDyed = vec3(1.0);\n' + shader.fragmentShader;
+        shader.fragmentShader = 'varying vec3 vPearlLocal; varying vec3 vPearlN; varying vec3 vPearlView; varying vec3 vPearlNView; uniform sampler2D patternMap; uniform vec3 bodyDye; uniform vec3 bodyDyeB; uniform vec3 bodyDyeC; uniform vec3 bodyDyeD; uniform float bodyDyed; uniform float dyeFlip; uniform float swimTime; uniform float swimPhase;\nvec4 pearlPigment = vec4(0.0); vec3 pearlDyed = vec3(1.0);\n' + shader.fragmentShader;
         shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
           vec3 bw = abs(normalize(vPearlN));
           bw *= bw;
           bw /= max(0.001, bw.x + bw.y + bw.z);
-          pearlPigment = texture2D(patternMap, clamp(vPearlLocal.zy * vec2(0.82, 0.95) + 0.5, vec2(0.02), vec2(0.98))) * bw.x;
-          pearlPigment += texture2D(patternMap, clamp(vPearlLocal.xz * vec2(0.82, 0.9) + 0.5, vec2(0.02), vec2(0.98))) * bw.y;
-          pearlPigment += texture2D(patternMap, clamp(vPearlLocal.xy * vec2(0.82, 1.0) + 0.5, vec2(0.02), vec2(0.98))) * bw.z;
+          vec3 pearlPos = vPearlLocal;
+          pearlPos.x *= dyeFlip;
+          vec2 noseUv = dyeFlip < 0.0 ? pearlPos.yz : pearlPos.zy;
+          vec2 backUv = dyeFlip < 0.0 ? vec2(pearlPos.z, pearlPos.x) : pearlPos.xz;
+          vec2 flankUv = dyeFlip < 0.0 ? vec2(pearlPos.y, pearlPos.x) : pearlPos.xy;
+          pearlPigment = texture2D(patternMap, clamp(noseUv * vec2(0.82, 0.95) + 0.5, vec2(0.02), vec2(0.98))) * bw.x;
+          pearlPigment += texture2D(patternMap, clamp(backUv * vec2(0.82, 0.9) + 0.5, vec2(0.02), vec2(0.98))) * bw.y;
+          pearlPigment += texture2D(patternMap, clamp(flankUv * vec2(0.82, 1.0) + 0.5, vec2(0.02), vec2(0.98))) * bw.z;
           float ink = clamp(pearlPigment.a, 0.0, 1.0);
-          float flow = clamp(vPearlLocal.x * 0.9 + vPearlLocal.y * 0.55 + 0.5, 0.0, 1.0);
-          flow = mix(flow, 0.5 + 0.5 * sin(vPearlLocal.z * 2.4 + swimTime * 0.22 + swimPhase), 0.28);
-          pearlDyed = mix(bodyDye, bodyDyeB, flow);
+          float along = smoothstep(0.08, 0.92, clamp(pearlPos.x * 0.85 + 0.5, 0.0, 1.0));
+          float across = clamp(vPearlLocal.y * 1.05 + 0.5, 0.0, 1.0);
+          along = mix(along, 0.5 + 0.5 * sin(vPearlLocal.z * 2.1 + swimTime * 0.16 + swimPhase), 0.16);
+          vec3 early = mix(bodyDye, bodyDyeB, smoothstep(0.0, 0.55, along));
+          vec3 late = mix(bodyDyeD, bodyDyeC, smoothstep(0.4, 1.0, along));
+          pearlDyed = mix(early, late, along);
+          pearlDyed = mix(pearlDyed, bodyDyeD, across * 0.22);
+          vec3 inkColor = pearlPigment.rgb;
+          float depth = smoothstep(0.06, 0.4, ink) * mix(0.82, 1.0, bodyDyed);
           diffuseColor.rgb = mix(vec3(0.99, 0.98, 0.96), pearlDyed, bodyDyed);
-          diffuseColor.rgb = mix(diffuseColor.rgb, pearlPigment.rgb, ink);
-          diffuseColor.a = mix(diffuseColor.a, 0.96, ink);`);
+          diffuseColor.rgb = mix(diffuseColor.rgb, inkColor, depth);
+          diffuseColor.a = mix(diffuseColor.a, 0.82, bodyDyed * 0.75);
+          diffuseColor.a = mix(diffuseColor.a, 0.94, depth);
+          if (!gl_FrontFacing) diffuseColor.a *= mix(1.0, 0.05, bodyDyed);`);
         shader.fragmentShader = shader.fragmentShader.replace('#include <emissive_fragment>', `#include <emissive_fragment>
           float rim = pow(1.0 - clamp(abs(dot(normalize(vPearlNView), normalize(vPearlView))), 0.0, 1.0), 2.6);
           float pulse = 0.5 + 0.5 * sin(swimTime * 0.65 + swimPhase);
           vec3 breath = mix(vec3(1.0, 0.98, 0.96), pearlDyed, bodyDyed);
           totalEmissiveRadiance += breath * (0.08 + rim * 0.16 + pulse * 0.03);
-          totalEmissiveRadiance += pearlPigment.rgb * clamp(pearlPigment.a, 0.0, 1.0) * 1.35;`);
+          vec3 inkGlow = pearlPigment.rgb;
+          totalEmissiveRadiance += inkGlow * clamp(pearlPigment.a, 0.0, 1.0) * bodyDyed * 1.05;`);
       };
-      material.customProgramCacheKey = () => 'ending-spine-v13-' + kind + (fin ? '-fin' : '');
+      material.customProgramCacheKey = () => 'ending-spine-v20-' + kind + (fin ? '-fin' : '');
       return material;
     }
 
@@ -768,7 +834,8 @@ vec3 articulateSea(vec3 original){
         position: rootFish.position, velocity: new T.Vector3(),
         offset: new T.Vector3(Math.cos(slotAngle) * 1.45, (slot - 1) * 0.22, Math.sin(slotAngle) * 1.05),
         state: 'school', cooldown: 0, meet: 0, placed: false, dyed: 0,
-        dye: pearl.clone(), dyeB: pearl.clone(),
+        dye: pearl.clone(), dyeB: pearl.clone(), dyeC: pearl.clone(), dyeD: pearl.clone(),
+        bulk: kind === 'jelly' ? size * 1.15 : size,
         pen: {x: 128, y: 128}, penWorld: new T.Vector3(), penReady: false
       });
     }
@@ -803,7 +870,31 @@ vec3 articulateSea(vec3 original){
       }).catch(() => { failed = true; });
     }
 
-    function clampLake() {
+    function clearStone(pos, bulk) {
+      const bed = options.bed;
+      if (typeof bed !== 'function') return;
+      const pad = 0.34 + bulk * 0.2;
+      const reach = 0.42 + bulk * 0.22;
+      let floor = Math.max(bed(pos.x, pos.z), bed(pos.x + reach, pos.z), bed(pos.x - reach, pos.z), bed(pos.x, pos.z + reach), bed(pos.x, pos.z - reach));
+      const ceiling = waterLevel - 0.38;
+      let lift = floor + pad;
+      if (lift > ceiling - 0.08) {
+        const dx = pos.x, dz = pos.z - lakeZ;
+        const dist = Math.hypot(dx, dz) || 1;
+        const step = Math.min(0.72, 0.24 + (lift - ceiling));
+        pos.x -= dx / dist * step;
+        pos.z -= dz / dist * step;
+        floor = bed(pos.x, pos.z);
+        lift = floor + pad;
+      }
+      if (lift >= ceiling) pos.y = ceiling;
+      else {
+        if (pos.y < lift) pos.y = lift;
+        if (pos.y > ceiling) pos.y = ceiling;
+      }
+    }
+
+    function clampLake(bulk) {
       const dx = goal.x, dz = goal.z - lakeZ;
       const dist = Math.hypot(dx, dz);
       const limit = lakeR * 0.72;
@@ -812,6 +903,7 @@ vec3 articulateSea(vec3 original){
         goal.z = lakeZ + dz / dist * limit;
       }
       goal.y = Math.min(waterLevel - 0.5, Math.max(-8.4, goal.y));
+      clearStone(goal, bulk || 0.7);
     }
 
     function placeGroup(school) {
@@ -828,12 +920,12 @@ vec3 articulateSea(vec3 original){
       goal.z += Math.cos(time * 0.11 + fish.phase) * 0.28;
       const dx = goal.x - bodyX, dz = goal.z - bodyZ;
       const dist = Math.hypot(dx, dz);
-      if (dist < 4.4) {
-        const scale = dist < 0.001 ? 4.4 : 4.4 / dist;
+      if (dist < 1.7) {
+        const scale = dist < 0.001 ? 1.7 : 1.7 / dist;
         goal.x = bodyX + dx * scale;
         goal.z = bodyZ + dz * scale;
       }
-      clampLake();
+      clampLake(fish.bulk);
     }
 
     function paintPattern(fish, px, py, pz) {
@@ -860,12 +952,13 @@ vec3 articulateSea(vec3 original){
         const nest = {x: ink.root.x, y: ink.root.y};
         for (let layer = 0; layer < 12; layer++) {
           const centre = {
-            x: nest.x + Math.cos(phase + layer * 0.62) * 3.2,
-            y: nest.y + Math.sin(phase + layer * 0.62) * 2.6
+            x: nest.x + Math.cos(phase + layer * 0.62) * 5,
+            y: nest.y + Math.sin(phase + layer * 0.62) * 4
           };
           const clear = layer === 3 || layer === 7 || layer === 10;
-          const radius = layer === 0 ? 68 : layer === 11 ? 22 : clear ? 26 : 36;
-          ink.field.drop(centre, radius, colors[layer % 3], clear, colors[(layer + 1) % 3]);
+          const radius = layer === 0 ? 40 : layer === 11 ? 12 : 20;
+          const stops = colors.map((_, step) => colors[(layer + step) % colors.length]);
+          ink.field.drop(centre, radius, stops[0], clear, stops[1], stops);
         }
         ink.seeded = 1;
         ink.prev = {x: ink.root.x, y: ink.root.y};
@@ -898,18 +991,15 @@ vec3 articulateSea(vec3 original){
         ink.prev = next;
         return;
       }
-      ink.field.stroke(ink.prev, next, 14 + Math.min(1, moved * 2) * 6);
+      ink.field.stroke(ink.prev, next, 32 + Math.min(1, moved * 1.5) * 8);
       ink.path.push({x: next.x / 256, y: next.y / 256});
       if (ink.path.length > 48) ink.path.shift();
-      if (ink.habits.length < 3 && ink.path.length >= 6 + ink.habits.length * 8) {
+      if (ink.habits.length < 4 && ink.path.length >= 5 + ink.habits.length * 6) {
         ink.habits.push({
-          color: ink.palette[ink.habits.length % 3],
-          curves: gestureCurves(ink.path.slice(), fish.index % 3, ink.habits.length, fish.phase)
+          color: ink.palette[ink.habits.length % ink.palette.length],
+          edge: ink.palette[(ink.habits.length + 2) % ink.palette.length],
+          curves: gestureCurves(ink.path.slice(), ink.habits.length % 3, ink.habits.length, fish.phase)
         });
-      }
-      if (ink.drops < 2 && moved > 0.35 && fish.meet > (ink.drops + 1) * 1.6) {
-        ink.field.drop(next, 6.5, ink.palette[ink.drops % 3], false, ink.palette[(ink.drops + 1) % 3]);
-        ink.drops++;
       }
       fish.pen.x = next.x;
       fish.pen.y = next.y;
@@ -1023,8 +1113,10 @@ vec3 articulateSea(vec3 original){
               let nx = -tz, nz = tx;
               if (nx * guideX + nz * guideZ < 0) { nx = -nx; nz = -nz; }
               guideX = nx; guideZ = nz;
-              const half = 0.012 * fadeIn * fadeOut;
+              const swell = 0.5 + 0.5 * Math.sin(behind * 2.15);
+              const half = (0.014 + swell * 0.046) * fadeIn * fadeOut;
               wakeColour.set(p1.palette[0]);
+              if (p1.palette[2]) wakeColour.lerp(wakeEdge.set(p1.palette[2]), swell * 0.7);
               for (const side of [-1, 1]) {
                 const offset = side * half, k = vertex * 3;
                 wakePositions[k] = x + nx * offset;
@@ -1116,8 +1208,8 @@ vec3 articulateSea(vec3 original){
         mood.hemi.intensity = mood.hemiIntensity + grade * 0.12;
       }
       if (waterMood.amount.value > 0.001) {
-        moodMid.copy(waterMood.color.value).lerp(waterMood.colorB.value, 0.5);
-        scene.fog.color.lerp(moodMid, waterMood.amount.value * grade * 0.58);
+        moodMid.copy(waterMood.color.value).lerp(waterMood.colorB.value, 0.5).lerp(waterMood.colorC.value, 0.33);
+        scene.fog.color.lerp(moodMid, waterMood.amount.value * grade * 0.48);
       }
     }
 
@@ -1127,12 +1219,18 @@ vec3 articulateSea(vec3 original){
       swimTime.value = time;
       const lx = worldX - anchorX;
       const lz = worldZ - anchorZ;
-      if (!hasPrev) { prevX = lx; prevZ = lz; hasPrev = true; }
-      const speed = dt > 0 ? Math.hypot(lx - prevX, lz - prevZ) / dt : 0;
+      const moveX = hasPrev ? lx - prevX : 0;
+      const moveZ = hasPrev ? lz - prevZ : 0;
+      const moveY = hasPrev ? bodyY - prevY : 0;
+      hasPrev = true;
       prevX = lx;
       prevZ = lz;
+      prevY = bodyY;
+      const hop = Math.hypot(moveX, moveZ);
       const dist = Math.hypot(lx, lz - lakeZ);
       const inside = 1 - T.MathUtils.smoothstep(dist, lakeR * 0.55, lakeR + 1.5);
+      const glide = hop > 0.00001 && hop < 2.8 && inside > 0.08;
+      const lift = glide && bodyY < waterLevel - 0.2;
       const depth = 1 - T.MathUtils.smoothstep(bodyY, waterLevel - 0.75, waterLevel + 0.08);
       const reveal = inside * depth;
       const scene = group.parent;
@@ -1167,14 +1265,30 @@ vec3 articulateSea(vec3 original){
         waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * 0.12);
         waterMood.color.value.lerp(moodTarget, 1 - Math.exp(-dt * 1.6));
         waterMood.colorB.value.lerp(moodTargetB, 1 - Math.exp(-dt * 1.6));
+        waterMood.colorC.value.lerp(moodTargetC, 1 - Math.exp(-dt * 1.6));
         drawWake(time);
         return;
+      }
+      if (glide) {
+        for (const school of schoolGroups) {
+          const near = Math.hypot(school.center.x - lx, school.center.z - lz);
+          const pull = 1 - T.MathUtils.smoothstep(near, 3.2, 12);
+          if (pull <= 0) continue;
+          school.center.x += moveX * pull;
+          school.center.z += moveZ * pull;
+          school.goal.x += moveX * pull;
+          school.goal.z += moveZ * pull;
+          if (lift) {
+            school.center.y += moveY * pull;
+            school.goal.y += moveY * pull;
+          }
+        }
       }
       for (const school of schoolGroups) {
         const awayX = school.center.x - lx, awayZ = school.center.z - lz;
         const away = Math.hypot(awayX, awayZ);
-        if (away < 5) {
-          const scale = away < 0.2 ? 5 : 5 / away;
+        if (away < 1.85) {
+          const scale = away < 0.2 ? 1.85 : 1.85 / away;
           school.goal.set(lx + awayX * scale, school.center.y, lz + awayZ * scale);
         } else if (school.center.distanceTo(school.goal) < 1.8) placeGroup(school);
         scratch.copy(school.goal).sub(school.center);
@@ -1206,9 +1320,13 @@ vec3 articulateSea(vec3 original){
           washColour = wash[0];
           dyeColour.set(wash[0]);
           dyeColourB.set(wash[1]);
-          fish.dye.lerp(dyeColour, 1 - Math.exp(-dt * 2.4));
-          fish.dyeB.lerp(dyeColourB, 1 - Math.exp(-dt * 2.4));
-          fish.dyed = Math.min(1, fish.dyed + dt * 0.9);
+          dyeColourD.set(wash[2]);
+          dyeColourC.set(wash[4] || wash[wash.length - 1]);
+          fish.dye.lerp(dyeColour, 1 - Math.exp(-dt * 1.4));
+          fish.dyeB.lerp(dyeColourB, 1 - Math.exp(-dt * 1.4));
+          fish.dyeC.lerp(dyeColourC, 1 - Math.exp(-dt * 1.4));
+          fish.dyeD.lerp(dyeColourD, 1 - Math.exp(-dt * 1.4));
+          fish.dyed = Math.max(fish.dyed, Math.min(1, fish.meet / MEET_SECONDS));
           const q = fish.object.quaternion;
           const fx = 1 - 2 * (q.y * q.y + q.z * q.z);
           const fy = 2 * (q.x * q.y + q.w * q.z);
@@ -1218,10 +1336,20 @@ vec3 articulateSea(vec3 original){
           noteWake(lx, bodyY + 0.15, lz, time, wash, 1000 + fish.index);
           if (fish.state === 'near' && fish.meet >= MEET_SECONDS) depart(fish, time);
         }
+        if (glide) {
+          const stuck = fish === visitor && fish.state !== 'return';
+          const besideNow = Math.hypot(fish.position.x - lx, fish.position.z - lz);
+          const pull = stuck ? 1 : 1 - T.MathUtils.smoothstep(besideNow, 2.6, 11);
+          if (pull > 0) {
+            fish.position.x += moveX * pull;
+            fish.position.z += moveZ * pull;
+            if (lift || stuck) fish.position.y += moveY * pull;
+          }
+        }
         if (fish === visitor && fish.state !== 'return') {
           const spin = time * 0.16 + fish.phase;
-          goal.set(lx + Math.cos(spin) * 1.25, Math.min(waterLevel - 0.55, bodyY + 0.42), lz + Math.sin(spin) * 1.25);
-          clampLake();
+          goal.set(lx + Math.cos(spin) * 0.78, Math.min(waterLevel - 0.42, bodyY + 0.16), lz + Math.sin(spin) * 0.78);
+          clampLake(fish.bulk);
         } else {
           schoolGoal(time, fish, lx, lz);
           if (fish.state === 'school') {
@@ -1251,6 +1379,7 @@ vec3 articulateSea(vec3 original){
         const response = fish.state === 'school' ? 0.55 : fish.state === 'approach' ? 1.5 : 0.9;
         fish.velocity.lerp(scratch, 1 - Math.exp(-dt * response));
         fish.position.addScaledVector(fish.velocity, dt);
+        clearStone(fish.position, fish.bulk || 0.7);
         if (fish.velocity.lengthSq() > 0.0004) {
           heading.copy(fish.velocity).normalize();
           aim.setFromUnitVectors(forward, heading);
@@ -1260,11 +1389,13 @@ vec3 articulateSea(vec3 original){
         if (fish.state === 'return' && length < 1.1) fish.state = 'school';
         const fade = T.MathUtils.smoothstep(reveal, 0.02, 0.8);
         for (const material of fish.materials) {
-          material.opacity = fade * material.userData.baseOpacity;
+          material.opacity = fade * (material.userData.baseOpacity + fish.dyed * 0.26);
           material.color.copy(material.userData.restColor).lerp(fish.dye, fish.dyed);
           material.emissive.copy(fish.dye);
           material.userData.bodyDye.value.copy(fish.dye);
           material.userData.bodyDyeB.value.copy(fish.dyeB);
+          material.userData.bodyDyeC.value.copy(fish.dyeC);
+          material.userData.bodyDyeD.value.copy(fish.dyeD);
           material.userData.bodyDyed.value = fish.dyed;
           material.emissiveIntensity = 0.16 + fish.dyed * 0.22 + (fish.state === 'near' ? 0.05 : 0);
           material.envMapIntensity = 0.1 * (1 - fish.dyed * 0.45);
@@ -1274,10 +1405,13 @@ vec3 articulateSea(vec3 original){
       if (washColour) {
         moodTarget.set(washColour);
         moodTargetB.copy(dyeColourB);
-        waterMood.amount.value = Math.min(1, waterMood.amount.value + dt * 1.15);
-      } else waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * 0.12);
+        moodTargetC.copy(dyeColourC);
+        const depth = visitor ? visitor.dyed : waterMood.amount.value;
+        waterMood.amount.value += (depth - waterMood.amount.value) * (1 - Math.exp(-dt * 0.7));
+      } else waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * 0.06);
       waterMood.color.value.lerp(moodTarget, 1 - Math.exp(-dt * 1.6));
       waterMood.colorB.value.lerp(moodTargetB, 1 - Math.exp(-dt * 1.6));
+      waterMood.colorC.value.lerp(moodTargetC, 1 - Math.exp(-dt * 1.6));
       drawWake(time);
     }
 

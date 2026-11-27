@@ -77,30 +77,45 @@
   carveUniforms.carveMask.value.needsUpdate = true;
   const stoneMat = new T.MeshStandardMaterial({map:granite, roughness:.94, metalness:0, envMapIntensity:.13});
   function compileGranite(shader, carve){
-    shader.vertexShader = 'varying vec2 groundXZ;\n' + shader.vertexShader.replace('#include <worldpos_vertex>',
-      '#include <worldpos_vertex>\ngroundXZ = (modelMatrix * vec4(transformed,1.)).xz;');
-    let fragment = 'varying vec2 groundXZ;\n' + shader.fragmentShader;
+    shader.vertexShader = 'varying vec3 stonePos;\nvarying vec3 stoneNormal;\nvarying vec2 groundXZ;\n' + shader.vertexShader.replace('#include <worldpos_vertex>',
+      `#include <worldpos_vertex>
+      stonePos = worldPosition.xyz;
+      stoneNormal = normalize(mat3(modelMatrix) * objectNormal);
+      groundXZ = stonePos.xz;`);
+    let fragment = `varying vec3 stonePos;
+varying vec3 stoneNormal;
+varying vec2 groundXZ;
+vec4 stoneCoat(vec2 p){
+  vec2 grid = p / vec2(2.4,1.24);
+  float row = floor(grid.y);
+  grid.x += mod(row,2.)*.5;
+  vec2 stone = floor(grid);
+  float seed = fract(sin(dot(stone,vec2(41.31,27.17)))*1837.853);
+  vec2 uv = p*.94 + seed*10.;
+  vec3 grains = texture2D(map,uv).rgb;
+  float pockets = texture2D(map,p*.034+vec2(2.12,4.78)).g;
+  float chips = texture2D(map,p*.18+vec2(.37,1.16)).g;
+  float relief = .042*pockets + .018*chips + .004*grains.g;
+  grains *= .70 + seed*.16 + pockets*.46 + chips*.19;
+  grains *= mix(vec3(.96,.99,1.02),vec3(1.035,1.,.955),seed);
+  vec2 edge = .5 - abs(fract(grid)-.5);
+  vec2 metres = edge * vec2(2.4,1.24);
+  float seam = min(metres.x,metres.y);
+  float aa = clamp(fwidth(seam),.0006,.065);
+  float cut = 1.-smoothstep(.0015-aa,.0045+aa,seam);
+  float bevel = 1.-smoothstep(.004-aa,.011+aa,seam);
+  float fade = 1.-smoothstep(.012,.08,aa);
+  grains *= 1.-(.43*cut+.095*bevel)*fade;
+  return vec4(grains, relief);
+}
+` + shader.fragmentShader;
     let grain = `
-      vec2 grid = groundXZ / vec2(2.4,1.24);
-      float row = floor(grid.y);
-      grid.x += mod(row,2.)*.5;
-      vec2 stone = floor(grid);
-      float seed = fract(sin(dot(stone,vec2(41.31,27.17)))*1837.853);
-      vec2 uv = groundXZ*.94 + seed*10.;
-      vec3 grains = texture2D(map,uv).rgb;
-      float pockets = texture2D(map,groundXZ*.034+vec2(2.12,4.78)).g;
-      float chips = texture2D(map,groundXZ*.18+vec2(.37,1.16)).g;
-      float relief = .042*pockets + .018*chips + .004*grains.g;
-      grains *= .70 + seed*.16 + pockets*.46 + chips*.19;
-      grains *= mix(vec3(.96,.99,1.02),vec3(1.035,1.,.955),seed);
-      vec2 edge = .5 - abs(fract(grid)-.5);
-      vec2 metres = edge * vec2(2.4,1.24);
-      float seam = min(metres.x,metres.y);
-      float aa = clamp(fwidth(seam),.0006,.065);
-      float cut = 1.-smoothstep(.0015-aa,.0045+aa,seam);
-      float bevel = 1.-smoothstep(.004-aa,.011+aa,seam);
-      float fade = 1.-smoothstep(.012,.08,aa);
-      grains *= 1.-(.43*cut+.095*bevel)*fade;
+      vec3 axis = abs(normalize(stoneNormal));
+      axis = pow(axis, vec3(4.0));
+      axis /= max(axis.x + axis.y + axis.z, 0.0001);
+      vec4 coat = stoneCoat(stonePos.yz) * axis.x + stoneCoat(stonePos.xz) * axis.y + stoneCoat(stonePos.xy) * axis.z;
+      vec3 grains = coat.rgb;
+      float relief = coat.a;
       diffuseColor.rgb *= grains;
     `;
     if(carve){
@@ -258,10 +273,10 @@
   const orientation = new T.Euler(0,0,0,'YXZ');
   const rimOffset=new T.Vector3();
   const groundNormal=new T.Vector3(), terrainTilt=new T.Quaternion(), shadowHeading=new T.Quaternion();
-  const clingNormal=new T.Vector3(), clingUp=new T.Vector3(), shellTravel=new T.Vector3(), shellAxle=new T.Vector3(), strafeAxis=new T.Vector3(), shellLeapDir=new T.Vector3();
+  const clingNormal=new T.Vector3(), clingUp=new T.Vector3(), shellTravel=new T.Vector3(), shellAxle=new T.Vector3(), strafeAxis=new T.Vector3();
   const clingBasis=new T.Matrix4(), shellTarget=new T.Quaternion(), shellSpin=new T.Quaternion();
   const shellZ=new T.Vector3(0,0,1);
-  let cling=false, clingFace=0, clingLock=0, clingShove=null, roofDrop=false, shellLeap=0;
+  let cling=false, clingFace=0, clingLock=0, clingShove=null, roofDrop=false, onRoof=false, roofFloor=0, highFall=false;
   const orbit = {yaw:.20,pitch:.075};
   let pitBlend = 0;
   let heading=.52, roll=-.13, hop=0, jumpSpeed=0, wobble=0, wobbleSpeed=0, lastLobe=0, impactDelay=0;
@@ -387,10 +402,21 @@
     shadowMat.opacity=.12;
   }
   function mountShell(blocked){
+    const fromFlight=mode==='flying'||mode==='landing';
     clingFace=blocked.face;
     clingNormal.set(blocked.nx,blocked.ny,blocked.nz);
     location.set(blocked.x,blocked.y,blocked.z);
     cling=true;
+    if(fromFlight){
+      const nx=clingNormal.x, nz=clingNormal.z;
+      const dot=velocity.x*nx+velocity.z*nz;
+      const tx=velocity.x-nx*dot, tz=velocity.z-nz*dot;
+      const tlen=Math.hypot(tx,tz);
+      const keep=Math.min(2.45, tlen);
+      if(tlen>1e-4) velocity.set(tx/tlen*keep,0,tz/tlen*keep);
+      else velocity.set(0,0,0);
+      airY=location.y;
+    }
     if(mode==='jumping'||mode==='landing'||mode==='flying'){
       verticalSpeed=0; flight.speed=0; hop=0; jumpSpeed=0;
       setMode('ground');
@@ -398,12 +424,36 @@
     orientRoll(0);
     travelStatus.textContent='탑의 겉면을 따라 굴러갑니다. 위 키로 위로 구르고, Space로 떨어집니다.';
   }
-  function leapOffTower(){
-    const out=Math.hypot(clingNormal.x,clingNormal.z)||1;
-    shellLeapDir.set(clingNormal.x/out,0,clingNormal.z/out);
-    shellLeap=.8;
-    velocity.set(shellLeapDir.x*8,0,shellLeapDir.z*8);
-    clingLock=.8;
+  function roofUnder(x,z){
+    const rig=window.STUDIO_CLING;
+    if(!rig) return null;
+    const over=rig.project(3,x,roofFloor+4,z);
+    return over&&over.inside?over.y:null;
+  }
+  function standOnRoof(placed){
+    const rig=window.STUDIO_CLING;
+    if(!rig) return false;
+    const dx=placed.x-rig.center.x, dz=placed.z-rig.center.z, len=Math.hypot(dx,dz)||1;
+    const x=placed.x-dx/len*0.55, z=placed.z-dz/len*0.55;
+    const face=rig.project(3,x,placed.y+2,z);
+    if(!face||!face.inside) return false;
+    roofFloor=face.y;
+    onRoof=true;
+    highFall=false;
+    if(cling) releaseCling();
+    location.set(x,roofFloor,z);
+    groundNormal.set(0,1,0);
+    velocity.y=0;
+    airY=roofFloor;
+    if(mode==='flying'||mode==='landing'){
+      const spd=Math.hypot(velocity.x,velocity.z);
+      if(spd>2.6){velocity.x*=2.6/spd;velocity.z*=2.6/spd;}
+    }
+    if(mode==='jumping'||mode==='landing'||mode==='flying'){
+      verticalSpeed=0; flight.speed=0; hop=0; jumpSpeed=0;
+      setMode('ground');
+    }
+    return true;
   }
   function resolveShell(sampleY){
     const rig=window.STUDIO_CLING;
@@ -411,7 +461,10 @@
     const blocked=rig.pushOut(location.x,sampleY,location.z,.34);
     if(!blocked) return false;
     const outward=desired.x*blocked.nx+desired.z*blocked.nz;
-    if(blocked.ny>.5){mountShell(blocked);return true;}
+    if(blocked.ny>.5){
+      if(onRoof) return false;
+      if(standOnRoof(blocked)) return true;
+    }
     if(blocked.depth<.06&&outward>0) return false;
     const nDot=velocity.x*blocked.nx+velocity.z*blocked.nz;
     if(nDot<0){velocity.x-=blocked.nx*nDot;velocity.z-=blocked.nz*nDot;}
@@ -426,8 +479,13 @@
     const blocked=rig.pushOut(location.x,airY,location.z,.4);
     if(!blocked) return;
     if(roofDrop) return;
+    const into=velocity.x*blocked.nx+velocity.z*blocked.nz+verticalSpeed*blocked.ny;
+    if(!homing && (mode==='flying'||mode==='landing') && into<-0.8){
+      if(blocked.ny>.5?standOnRoof(blocked):false) return;
+      if(blocked.ny<=.5){mountShell(blocked);return;}
+    }
     if(blocked.ny>.5){
-      if(!homing&&airY<=blocked.y+.2){mountShell(blocked);return;}
+      if(!homing&&airY<=blocked.y+.2&&standOnRoof(blocked)) return;
       airY=Math.max(airY,blocked.y);
     }else{
       location.x=blocked.x;
@@ -474,10 +532,18 @@
     if(velocity.lengthSq()<0.0001) velocity.set(0,0,0);
     location.addScaledVector(velocity,dt);
     const placed=rig.wrap?rig.wrap(location.x,location.y,location.z,.32):rig.project(clingFace,location.x,location.y,location.z);
-    if(!placed || placed.drop || placed.y<rig.minY+0.2){
-      leapOffTower();
+    if(placed && !placed.drop && placed.ny>.55 && standOnRoof(placed)){
+      if(clingNormal.y<.4){
+        velocity.x+=-clingNormal.x*1.1;
+        velocity.z+=-clingNormal.z*1.1;
+      }
+      pose();
+      return;
+    }
+    const steppingOff=placed && !placed.drop && placed.y<rig.minY+0.15 && kz>0;
+    if(!placed || placed.drop || steppingOff){
       airY=Math.max(location.y,rig.minY);
-      verticalSpeed=1.1;
+      verticalSpeed=Math.min(-0.6,velocity.y);
       releaseCling();
       setMode('jumping');
       return;
@@ -495,26 +561,19 @@
     if(homing||(mode!=='ground'&&!cling)) return;
     if(cling){
       if(clingNormal.y>.55){
-        roofDrop=true;
-        flight.yaw=wrap(orbit.yaw+Math.PI);
-        flight.pitch=-.28; flight.bank=0; flight.speed=7.4; flight.takeoff=0;
-        airY=location.y; verticalSpeed=0;
-        heading=Math.atan2(-Math.cos(orbit.yaw),Math.sin(orbit.yaw));
+        if(standOnRoof({x:location.x,y:location.y,z:location.z})) pose();
+      }else{
+        clingShove=clingNormal.clone().multiplyScalar(2.8);
+        airY=location.y;
+        verticalSpeed=Math.max(3.1,clingNormal.y*3.2+3.4);
+        clingLock=.45;
         releaseCling();
-        clingLock=.2; hop=0; jumpSpeed=0;
-        setMode('landing');
-        lookFree=true; lookOffset=Math.PI;
-        travelStatus.textContent='탑 위에서 뒤쪽으로 내려앉습니다.';
+        hop=0; jumpSpeed=0;
+        setMode('jumping');
         return;
       }
-      leapOffTower();
-      airY=location.y;
-      verticalSpeed=Math.max(1.4,clingNormal.y*2+1.2);
-      releaseCling();
-      hop=0; jumpSpeed=0;
-      setMode('jumping');
-      return;
     }
+    if(onRoof) highFall=true;
     airY=eight.position.y; verticalSpeed=5.8;
     hop=0; jumpSpeed=0;
     setMode('jumping');
@@ -522,6 +581,8 @@
   function toggleFlight(){
     if(homing) return;
     roofDrop=false;
+    onRoof=false;
+    highFall=false;
     if(mode==='flying'){
       setMode('landing');
       return;
@@ -538,6 +599,17 @@
     hop=0; jumpSpeed=0;
     setMode('flying');
   }
+  const helpButton=document.querySelector('#help'), helpPanel=document.querySelector('#help-panel');
+  helpButton.addEventListener('click',()=>{
+    const open=helpPanel.hidden;
+    helpPanel.hidden=!open;
+    helpButton.setAttribute('aria-expanded',String(open));
+  });
+  document.addEventListener('pointerdown',e=>{
+    if(helpPanel.hidden||e.target.closest('#help')||e.target.closest('#help-panel')) return;
+    helpPanel.hidden=true;
+    helpButton.setAttribute('aria-expanded','false');
+  });
   jumpButton.addEventListener('click',jump);
   flightButton.addEventListener('click',toggleFlight);
   document.addEventListener('click',e=>{
@@ -593,12 +665,15 @@
     if (!drag || drag.id!==e.pointerId) return;
     if(Math.hypot(e.clientX-drag.ox, e.clientY-drag.oy)>5){
       drag.moved=true;
-      if(mode==='flying'||mode==='landing'){
+      if((mode==='flying'||mode==='landing') && (homing||roofDrop)){
         lookFree=true;
         lookOffset=wrap(orbit.yaw-flight.yaw);
       }
     }
     orbit.yaw-=(e.clientX-drag.x)*.006; orbit.pitch=T.MathUtils.clamp(orbit.pitch+(e.clientY-drag.y)*.0045,-1.2,.83);
+    if((mode==='flying'||mode==='landing') && !homing && !roofDrop){
+      flight.yaw=orbit.yaw; lookFree=false; lookOffset=0;
+    }
     drag.x=e.clientX; drag.y=e.clientY;
   });
   for(const name of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(name,e=>{
@@ -631,7 +706,7 @@
       if(p.x*downLocal.x+p.y*downLocal.y<reach-.36) continue;
       for(let side=-1;side<=1;side+=2){
         rimOffset.set(p.x,p.y,side*thickness*.5).multiplyScalar(glyphScale).applyQuaternion(eight.quaternion);
-        const ground=groundAt(location.x+rimOffset.x,location.z+rimOffset.z);
+        const ground=onRoof?roofFloor:groundAt(location.x+rimOffset.x,location.z+rimOffset.z);
         if(Number.isFinite(ground)) bodyY=Math.max(bodyY,ground-rimOffset.y);
       }
     }
@@ -827,6 +902,8 @@
   }
   function placeFadeTarget(){
     releaseCling();
+    onRoof=false;
+    highFall=false;
     clearInput();
     velocity.set(0,0,0); verticalSpeed=0; hop=0; jumpSpeed=0;
     flight.speed=0; flight.bank=0;
@@ -871,6 +948,8 @@
   function startFall(){
     if(mode==='falling'||homing) return;
     roofDrop=false;
+    onRoof=false;
+    highFall=false;
     airY=eight.position.y;
     verticalSpeed=Math.min(0, verticalSpeed, jumpSpeed);
     hop=0; jumpSpeed=0;
@@ -906,32 +985,49 @@
     }
     if(clingShove){ velocity.add(clingShove); clingShove=null; }
     clingLock=Math.max(0,clingLock-dt);
-    if(!cling && mode==='ground' && z<0 && shellLeap<=0){
+    if(!cling && !onRoof && mode==='ground' && z<0){
       const rig=window.STUDIO_CLING;
       const blocked=rig&&rig.pushOut(location.x,location.y+.45,location.z,2.2);
       if(blocked&&blocked.ny<.5) mountShell(blocked);
     }
     if(cling){ crawlSculpture(dt); return; }
     velocity.lerp(desired,ease(x||z?4.5:6.8,dt));
-    if(shellLeap>0){
-      shellLeap=Math.max(0,shellLeap-dt);
-      const aheadX=location.x+shellLeapDir.x*.8, aheadZ=location.z+shellLeapDir.z*.8;
-      if(Number.isFinite(groundAt(aheadX,aheadZ))){
-        velocity.x=shellLeapDir.x*8;
-        velocity.z=shellLeapDir.z*8;
-      }else shellLeap=0;
-    }
     if(velocity.lengthSq()<.0001) velocity.set(0,0,0);
     const speed=velocity.length();
     location.addScaledVector(velocity,dt);
     const surface=groundAt(location.x,location.z,groundNormal);
-    if((mode==='ground'||mode==='jumping') && !Number.isFinite(surface)){
-      startFall();
-      return;
+    if(onRoof){
+      const deck=roofUnder(location.x,location.z);
+      if(deck==null){
+        onRoof=false;
+        if(mode!=='jumping'){
+          airY=roofFloor;
+          verticalSpeed=-0.8;
+          clingLock=.35;
+          highFall=true;
+          setMode('jumping');
+          return;
+        }
+      }else{
+        roofFloor=deck;
+        location.y=deck;
+        groundNormal.set(0,1,0);
+        if(mode==='jumping' && airY<=deck && verticalSpeed<=0){
+          airY=deck; verticalSpeed=0; highFall=false;
+          setMode('ground');
+        }
+      }
     }
-    exhibition.constrain(location, mode==='jumping'?airY:surface);
-    location.y=surface;
-    if(mode==='ground'&&resolveShell(location.y+.32)) return;
+    if(!onRoof){
+      if((mode==='ground'||mode==='jumping') && !Number.isFinite(surface)){
+        startFall();
+        return;
+      }
+      if(highFall && mode==='jumping' && Number.isFinite(surface) && airY>surface+1.4) location.y=Math.max(surface, airY);
+      else location.y=surface;
+      if(highFall && mode==='ground') highFall=false;
+    }
+    if(mode==='ground'&&!onRoof&&resolveShell(location.y+.32)) return;
     // Steer the wheel toward travel. A little sideways slip keeps the two holes visible.
     if(speed>.045){
       let target=Math.atan2(-velocity.z,velocity.x);
@@ -980,7 +1076,10 @@
       followPoint.y=airY-.2;
     }else if(mode==='flying'||mode==='landing'){
       followPoint.y=Math.max(location.y,eight.position.y-.36);
-      if(drag||lookFree){
+      if(!homing && !roofDrop && drag){
+        flight.yaw=orbit.yaw;
+        lookFree=false; lookOffset=0;
+      }else if(drag||lookFree){
         if(drag) lookOffset=wrap(orbit.yaw-flight.yaw);
         orbit.yaw=wrap(flight.yaw+lookOffset);
       }else orbit.yaw+=wrap(flight.yaw-orbit.yaw)*ease(homing?8:3.2,dt);
@@ -1034,6 +1133,7 @@
     clearInput();location.set(spawn.x,0,spawn.z);velocity.set(0,0,0);orbit.yaw=.20;orbit.pitch=.075;
     location.y=groundAt(spawn.x,spawn.z,groundNormal);
     heading=.52;roll=-.13;hop=jumpSpeed=wobble=wobbleSpeed=impactDelay=0;lastLobe=0;wasMoving=false;
+    onRoof=false; highFall=false; roofDrop=false;
     airY=0;verticalSpeed=0;setMode('ground');
     pose();view(0,true);updateCoords();
   }

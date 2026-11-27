@@ -160,6 +160,11 @@
     const rim = [];
     for (let j = 0; j <= rows; j++) rim.push([bounds[j][1], zMin + j * rowH, heights[j * stride + cols]]);
     for (let j = rows; j >= 0; j--) rim.push([bounds[j][0], zMin + j * rowH, heights[j * stride]]);
+    const rimArc = new Float32Array(rim.length);
+    for (let j = 1; j < rim.length; j++) {
+      const a = rim[j - 1], b = rim[j];
+      rimArc[j] = rimArc[j - 1] + Math.hypot((b[0] - a[0]) * LAND, (b[1] - a[1]) * LAND);
+    }
     const cv = [], ci = [], cc = [], cu = [];
     const tiers = [0, 2.5, 9, 21, 39, 66, 93];
     const shades = ['#9b9a93', '#898d88', '#7d807d', '#68746e', '#66716e', '#83938c', '#9daca7'];
@@ -168,8 +173,9 @@
         const [x, z, y] = rim[j], a = Math.atan2(z / 137, x / 84), depth = tiers[k];
         const flute = Math.sin(a * 43 + 1.8 * Math.sin(a * 17)) + 0.52 * Math.sin(91 * a + 0.8 * k);
         const pinch = k === 0 ? 1 : 1 - 0.0021 * depth + 0.034 * flute * (1 - Math.exp(-k));
-        cv.push(x * pinch * LAND, y - depth * (1 + 0.085 * Math.sin(a * 19) + 0.045 * flute), z * pinch * LAND);
-        cu.push(j * 0.42, depth * 0.23);
+        const drop = depth * (1 + 0.085 * Math.sin(a * 19) + 0.045 * flute);
+        cv.push(x * pinch * LAND, y - drop, z * pinch * LAND);
+        cu.push(rimArc[j] * 1.05, drop * 1.05);
         const color = new T.Color(shades[k]).multiplyScalar(1 + 0.08 * flute);
         cc.push(color.r, color.g, color.b);
         if (k < tiers.length - 1) {
@@ -191,6 +197,7 @@
     const waterMood = {
       color: {value: new T.Color(0x7eb8c6)},
       colorB: {value: new T.Color(0x9ec9cf)},
+      colorC: {value: new T.Color(0xb7d4ea)},
       amount: {value: 0}
     };
     const northCentre = new T.Vector2(EIGHT.x, EIGHT.z + lakes[1].z * LAND);
@@ -205,11 +212,12 @@
       shader.uniforms.uUnder = waterUnder;
       shader.uniforms.uPigment = waterMood.color;
       shader.uniforms.uPigmentB = waterMood.colorB;
+      shader.uniforms.uPigmentC = waterMood.colorC;
       shader.uniforms.uMood = waterMood.amount;
       shader.uniforms.uLake = {value: northCentre};
       shader.uniforms.uLakeR = northRadius;
       shader.vertexShader = 'varying vec2 waterXZ;\n' + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nwaterXZ=(modelMatrix*vec4(position,1.)).xz;');
-      shader.fragmentShader = 'uniform float tLake; uniform float uUnder; uniform vec3 uPigment; uniform vec3 uPigmentB; uniform float uMood; uniform vec2 uLake; uniform float uLakeR; varying vec2 waterXZ;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      shader.fragmentShader = 'uniform float tLake; uniform float uUnder; uniform vec3 uPigment; uniform vec3 uPigmentB; uniform vec3 uPigmentC; uniform float uMood; uniform vec2 uLake; uniform float uLakeR; varying vec2 waterXZ;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
         vec2 p=waterXZ;
         float ripple=sin(p.y*4.5+.8*sin(p.x*.7+tLake*.35)+tLake*1.2);
         float swell=sin(p.y*1.65+p.x*.68-.6*tLake+.28*sin(p.x*1.5));
@@ -222,8 +230,8 @@
         float tide=0.5+0.5*sin(p.x*0.16+p.y*0.09-tLake*0.18);
         float tide2=0.5+0.5*sin(p.y*0.055-p.x*0.04+tLake*0.11);
         vec3 wash=mix(uPigment, uPigmentB, tide);
-        wash=mix(wash, mix(uPigmentB, uPigment, tide2), 0.42);
-        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*.9);`);
+        wash=mix(wash, uPigmentC, tide2*0.65);
+        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*0.72);`);
     };
     const waters = lakes.map(lake => {
       const v = [0, waterLevel, lake.z * LAND], idx = [];
@@ -300,7 +308,8 @@
     const endingLake = root.createEndingLake(T, {
       group, asset, waterUnder, waterMood,
       anchorX: EIGHT.x, anchorZ: EIGHT.z,
-      lakeZ: lakes[1].z * LAND, lakeR: lakes[1].r * LAND, waterLevel, renderer
+      lakeZ: lakes[1].z * LAND, lakeR: lakes[1].r * LAND, waterLevel, renderer,
+      bed: (x, z) => surfaceLocal(x / LAND, z / LAND)
     });
     if (loader && asset) {
       loader.load(asset('work-labels.png'), sheet => {

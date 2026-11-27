@@ -14,7 +14,7 @@
     rise: 2.55
   };
   const SKIRT = 1.15;
-  const LAND = 0.62;
+  const LAND = 0.46;
   const SITES = [[0,-124],[-58,-96],[0,-58],[58,-96],[-40,-14],[40,-14],[0,57],[-66,52],[66,52],[-48,108],[48,108],[0,132]];
 
   function smooth(e0, e1, x) {
@@ -26,7 +26,7 @@
     return t * t * t * (t * (t * 6 - 15) + 10);
   }
 
-  function createExhibition(T, baseGround, surfaceMat, carveUniforms, granite, loader, asset) {
+  function createExhibition(T, baseGround, surfaceMat, carveUniforms, granite, loader, asset, renderer) {
     const cos = Math.cos(EIGHT.rotation);
     const sin = Math.sin(EIGHT.rotation);
     const outer = EIGHT.radius + EIGHT.slope;
@@ -67,9 +67,25 @@
       const margin = Math.min(x - bounds[0], bounds[1] - x, z - zMin, zMax - z);
       const folds = Math.sin(x * 0.077 + 1.12 * Math.cos(z * 0.051)) + Math.sin(z * 0.113 + x * 0.046) * 0.65;
       const grains = 0.17 * Math.cos(x * 0.91 + z * 0.44) * Math.sin(z * 0.95) + 0.34 * Math.sin(z * 0.37 + x * 0.28) * Math.cos(x * 0.42);
-      const hillside = 3.4 + 2.9 * folds + grains + (5.5 + 2 * Math.sin(z * 0.24)) * Math.exp(-(Math.max(0, margin - 1) ** 2) / 85);
-      const t = T.MathUtils.smoothstep(shore, 0, 12);
-      return shore < 0 ? -1 + Math.max(-3.7, shore * 0.29) : mix(-1 + shore * 0.27, hillside, t);
+      const hillside = 3.4 + 2.9 * folds + grains + (5.5 + 2 * Math.sin(z * 0.24)) * Math.exp(-(Math.max(0, margin - 1) ** 2) / 130);
+      const t = T.MathUtils.smoothstep(shore, 0, 22);
+      const north = z >= 0;
+      const raw = shore < 0 ? -1 + Math.max(north ? -15.5 : -3.7, shore * (north ? 0.46 : 0.29)) : mix(-1 + shore * 0.16, hillside, t);
+      return -1 + (raw + 1) * 0.58;
+    }
+    const pads = SITES.map(([sx, sz]) => ({sx, sz, y: landform(sx, sz, edges(sz))}));
+    const padCore = 11, padReach = 24;
+    function settle(x, z, y) {
+      let best = 0, target = y;
+      for (let i = 0; i < pads.length; i++) {
+        const core = i === 10 ? 42 : padCore;
+        const reach = i === 10 ? 64 : padReach;
+        const d = Math.hypot(x - pads[i].sx, z - pads[i].sz);
+        if (d >= reach) continue;
+        const w = d <= core ? 1 : 1 - smooth(core, reach, d);
+        if (w > best) { best = w; target = pads[i].y; }
+      }
+      return best ? mix(y, target, best * 0.84) : y;
     }
     const bounds = [], stride = cols + 1, heights = new Float32Array((rows + 1) * stride);
     const verts = [], indices = [], uv = [];
@@ -78,7 +94,7 @@
       bounds.push(e);
       for (let col = 0; col <= cols; col++) {
         const x = mix(e[0], e[1], col / cols), i = row * stride + col;
-        heights[i] = landform(x, z, e);
+        heights[i] = settle(x, z, landform(x, z, e));
         verts.push(x * LAND, heights[i], z * LAND);
         uv.push(x * 0.2, z * 0.2);
         if (row < rows && col < cols) indices.push(i, i + stride, i + 1, i + stride, i + stride + 1, i + 1);
@@ -172,15 +188,28 @@
 
     const waterClock = {value: 0};
     const waterUnder = {value: 0};
+    const waterMood = {
+      color: {value: new T.Color(0x7eb8c6)},
+      colorB: {value: new T.Color(0x9ec9cf)},
+      amount: {value: 0}
+    };
+    const northCentre = new T.Vector2(EIGHT.x, EIGHT.z + lakes[1].z * LAND);
+    const northRadius = {value: lakes[1].r * LAND};
     const waterMat = new T.MeshStandardMaterial({
       color: 0xd7e6ec, roughness: 0.08, metalness: 0.02, envMapIntensity: 0.85,
-      transparent: true, opacity: 0.34, depthWrite: false, side: T.DoubleSide
+      transparent: true, opacity: 0.34, depthWrite: false, side: T.DoubleSide,
+      forceSinglePass: true
     });
     waterMat.onBeforeCompile = shader => {
       shader.uniforms.tLake = waterClock;
       shader.uniforms.uUnder = waterUnder;
+      shader.uniforms.uPigment = waterMood.color;
+      shader.uniforms.uPigmentB = waterMood.colorB;
+      shader.uniforms.uMood = waterMood.amount;
+      shader.uniforms.uLake = {value: northCentre};
+      shader.uniforms.uLakeR = northRadius;
       shader.vertexShader = 'varying vec2 waterXZ;\n' + shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nwaterXZ=(modelMatrix*vec4(position,1.)).xz;');
-      shader.fragmentShader = 'uniform float tLake; uniform float uUnder; varying vec2 waterXZ;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      shader.fragmentShader = 'uniform float tLake; uniform float uUnder; uniform vec3 uPigment; uniform vec3 uPigmentB; uniform float uMood; uniform vec2 uLake; uniform float uLakeR; varying vec2 waterXZ;\n' + shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
         vec2 p=waterXZ;
         float ripple=sin(p.y*4.5+.8*sin(p.x*.7+tLake*.35)+tLake*1.2);
         float swell=sin(p.y*1.65+p.x*.68-.6*tLake+.28*sin(p.x*1.5));
@@ -188,18 +217,29 @@
         diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.93,.97,.99), light*.7);
         diffuseColor.a=0.22+light*.2;
         diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.72,.88,.95), uUnder*.55);
-        diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);`);
+        diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);
+        float lakeMask=1.-smoothstep(uLakeR*.2, uLakeR*.95, length(waterXZ-uLake));
+        float tide=0.5+0.5*sin(p.x*0.16+p.y*0.09-tLake*0.18);
+        float tide2=0.5+0.5*sin(p.y*0.055-p.x*0.04+tLake*0.11);
+        vec3 wash=mix(uPigment, uPigmentB, tide);
+        wash=mix(wash, mix(uPigmentB, uPigment, tide2), 0.42);
+        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*.9);`);
     };
     const waters = lakes.map(lake => {
       const v = [0, waterLevel, lake.z * LAND], idx = [];
+      let reach = 0;
       for (let i = 0; i < 180; i++) {
         const a = i * Math.PI / 90, r = (shoreRadius(lake, a) + 0.8) * LAND;
+        if (r > reach) reach = r;
         v.push(Math.cos(a) * r, waterLevel, lake.z * LAND + Math.sin(a) * r);
         idx.push(0, (i + 1) % 180 + 1, i + 1);
       }
       const water = new T.Mesh(makeGeometry(v, idx), waterMat);
       water.name = 'clear-lake';
       water.renderOrder = 2;
+      water.userData.cx = 0;
+      water.userData.cz = lake.z * LAND;
+      water.userData.cr = reach;
       return water;
     });
 
@@ -258,9 +298,9 @@
     group.position.set(EIGHT.x, 0, EIGHT.z);
     group.add(terrain, cliffs, ...waters);
     const endingLake = root.createEndingLake(T, {
-      group, asset, waterUnder,
+      group, asset, waterUnder, waterMood,
       anchorX: EIGHT.x, anchorZ: EIGHT.z,
-      lakeZ: lakes[1].z * LAND, lakeR: lakes[1].r * LAND, waterLevel
+      lakeZ: lakes[1].z * LAND, lakeR: lakes[1].r * LAND, waterLevel, renderer
     });
     if (loader && asset) {
       loader.load(asset('work-labels.png'), sheet => {
@@ -279,8 +319,9 @@
           label.scale.set(1024 / pixelsPerUnit, 256 / pixelsPerUnit, 1);
           const lake = lz < 0 ? lakes[0] : lakes[1];
           const afloat = Math.hypot(lx, lz - lake.z) < 4;
-          const x = lx * LAND + (afloat ? 0 : 2.4), z = lz * LAND + (afloat ? 0 : 0.1);
-          label.position.set(x, stood(lx, lz) + (afloat ? 2.15 : 2.45), z);
+          const x = lx * LAND + (id === 11 ? 8.4 : afloat ? 0 : 2.4);
+          const z = lz * LAND + (id === 11 ? -0.4 : afloat ? 0 : 0.1);
+          label.position.set(x, stood(lx, lz) + (id === 11 ? 1.9 : afloat ? 2.15 : 2.45), z);
           group.add(label);
         });
       });
@@ -412,6 +453,15 @@
       togglePin,
       sync(now, x, z, bodyY, camera, engaged, hidden) {
         waterClock.value = now * 0.001;
+        const eye = Math.abs(camera.position.y - waterLevel);
+        for (const water of waters) {
+          const band = water.userData.grazing ? 0.22 : 0.12;
+          const dx = camera.position.x - group.position.x - water.userData.cx;
+          const dz = camera.position.z - group.position.z - water.userData.cz;
+          const over = dx * dx + dz * dz < (water.userData.cr + 0.8) * (water.userData.cr + 0.8);
+          water.userData.grazing = eye < band && over;
+          water.visible = !water.userData.grazing;
+        }
         endingLake.update(now * 0.001, x, z, bodyY, camera);
         latest.x = x;
         latest.z = z;

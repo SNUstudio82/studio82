@@ -204,7 +204,7 @@
   }
   let sampleGround = baseGround;
   function groundAt(x,z,normal){ return sampleGround(x,z,normal); }
-  const exhibition = createExhibition(T, baseGround, pitMat, carveUniforms, granite, loader, asset);
+  const exhibition = createExhibition(T, baseGround, pitMat, carveUniforms, granite, loader, asset, renderer);
   sampleGround = exhibition.sample;
   scene.add(exhibition.group);
   previews = window.StudioPreview.create({T, scene, camera, canvas, mounts: exhibition.mounts});
@@ -258,6 +258,10 @@
   const orientation = new T.Euler(0,0,0,'YXZ');
   const rimOffset=new T.Vector3();
   const groundNormal=new T.Vector3(), terrainTilt=new T.Quaternion(), shadowHeading=new T.Quaternion();
+  const clingNormal=new T.Vector3(), clingUp=new T.Vector3(), shellTravel=new T.Vector3(), shellAxle=new T.Vector3(), strafeAxis=new T.Vector3(), shellLeapDir=new T.Vector3();
+  const clingBasis=new T.Matrix4(), shellTarget=new T.Quaternion(), shellSpin=new T.Quaternion();
+  const shellZ=new T.Vector3(0,0,1);
+  let cling=false, clingFace=0, clingLock=0, clingShove=null, roofDrop=false, shellLeap=0;
   const orbit = {yaw:.20,pitch:.075};
   let pitBlend = 0;
   let heading=.52, roll=-.13, hop=0, jumpSpeed=0, wobble=0, wobbleSpeed=0, lastLobe=0, impactDelay=0;
@@ -346,34 +350,191 @@
     jumpButton.disabled=mode!=='ground';
     flightLabel.textContent=mode==='flying'?'착륙':mode==='landing'?'다시 이륙':'이륙';
     steerHint.textContent=inFlight?'↑↓ 고도 · ←→ 선회':'이동';
-    travelStatus.textContent=mode==='flying'?'비행 중. 위아래로 고도 조절, 좌우로 선회합니다.':
+    travelStatus.textContent=mode==='flying'?'비행 중. 위아래로 고도를 조절하고, 화면을 좌우로 끌어 둘러봅니다.':
       mode==='landing'?'착륙 중':mode==='falling'?'절벽에서 떨어져 곧 돌아옵니다.':mode==='jumping'?'점프':'지상';
     contact.visible=mode==='ground'||mode==='jumping';
-    if(next==='ground') lookFree=false;
+    if(next==='ground'){lookFree=false;lookOffset=0;}
     for(const button of document.querySelectorAll('[data-key]')){
       const labels=inFlight?['상승','좌선회','하강','우선회']:['앞으로','왼쪽으로','뒤로','오른쪽으로'];
       const index=['ArrowUp','ArrowLeft','ArrowDown','ArrowRight'].indexOf(button.dataset.key);
       button.setAttribute('aria-label',labels[index]);
     }
   }
+  function releaseCling(){
+    if(!cling) return;
+    cling=false;
+    if(mode==='ground') travelStatus.textContent='지상';
+  }
+  function orientRoll(dt){
+    const n=clingNormal;
+    if(velocity.lengthSq()>1e-4) shellTravel.copy(velocity);
+    shellTravel.addScaledVector(n,-shellTravel.dot(n));
+    if(shellTravel.lengthSq()<1e-6){
+      shellTravel.set(Math.cos(heading),0,-Math.sin(heading));
+      shellTravel.addScaledVector(n,-shellTravel.dot(n));
+    }
+    if(shellTravel.lengthSq()<1e-6) shellTravel.set(1,0,0).addScaledVector(n,-n.x);
+    shellTravel.normalize();
+    shellAxle.crossVectors(shellTravel,n);
+    if(shellAxle.lengthSq()<1e-6) return;
+    shellAxle.normalize();
+    clingBasis.makeBasis(shellTravel,n,shellAxle);
+    shellSpin.setFromAxisAngle(shellZ,roll);
+    shellTarget.setFromRotationMatrix(clingBasis).multiply(shellSpin);
+    eight.quaternion.slerp(shellTarget,dt>0?ease(8,dt):1);
+    eight.position.copy(location);
+    contact.position.copy(location);
+    shadowMat.opacity=.12;
+  }
+  function mountShell(blocked){
+    clingFace=blocked.face;
+    clingNormal.set(blocked.nx,blocked.ny,blocked.nz);
+    location.set(blocked.x,blocked.y,blocked.z);
+    cling=true;
+    if(mode==='jumping'||mode==='landing'||mode==='flying'){
+      verticalSpeed=0; flight.speed=0; hop=0; jumpSpeed=0;
+      setMode('ground');
+    }
+    orientRoll(0);
+    travelStatus.textContent='탑의 겉면을 따라 굴러갑니다. 위 키로 위로 구르고, Space로 떨어집니다.';
+  }
+  function leapOffTower(){
+    const out=Math.hypot(clingNormal.x,clingNormal.z)||1;
+    shellLeapDir.set(clingNormal.x/out,0,clingNormal.z/out);
+    shellLeap=.8;
+    velocity.set(shellLeapDir.x*8,0,shellLeapDir.z*8);
+    clingLock=.8;
+  }
+  function resolveShell(sampleY){
+    const rig=window.STUDIO_CLING;
+    if(!rig||cling||clingLock>0) return false;
+    const blocked=rig.pushOut(location.x,sampleY,location.z,.34);
+    if(!blocked) return false;
+    const outward=desired.x*blocked.nx+desired.z*blocked.nz;
+    if(blocked.ny>.5){mountShell(blocked);return true;}
+    if(blocked.depth<.06&&outward>0) return false;
+    const nDot=velocity.x*blocked.nx+velocity.z*blocked.nz;
+    if(nDot<0){velocity.x-=blocked.nx*nDot;velocity.z-=blocked.nz*nDot;}
+    if(mode==='ground'&&outward<-.35){mountShell(blocked);return true;}
+    location.x=blocked.x;
+    location.z=blocked.z;
+    return false;
+  }
+  function shaveShell(){
+    const rig=window.STUDIO_CLING;
+    if(!rig||cling) return;
+    const blocked=rig.pushOut(location.x,airY,location.z,.4);
+    if(!blocked) return;
+    if(roofDrop) return;
+    if(blocked.ny>.5){
+      if(!homing&&airY<=blocked.y+.2){mountShell(blocked);return;}
+      airY=Math.max(airY,blocked.y);
+    }else{
+      location.x=blocked.x;
+      location.z=blocked.z;
+    }
+  }
+  function holdRoofDrop(){
+    const rig=window.STUDIO_CLING;
+    const over=rig&&rig.project(3,location.x,airY,location.z);
+    if(over&&over.inside){
+      const roofY=over.y+.32;
+      if(airY<roofY) airY=roofY;
+      verticalSpeed=0;
+      return;
+    }
+    roofDrop=false;
+    if(verticalSpeed>-1.5) verticalSpeed=-2.2;
+  }
+  function crawlSculpture(dt){
+    const rig=window.STUDIO_CLING;
+    if(!rig){ releaseCling(); return; }
+    let kx=0,kz=0;
+    for(const key of new Set([...held,...pointerKeys.values()])){
+      if(keyDir[key]){kx+=keyDir[key][0];kz+=keyDir[key][1];}
+    }
+    clingUp.set(0,1,0).addScaledVector(clingNormal,-clingNormal.y);
+    if(clingUp.lengthSq()<0.04){
+      clingUp.set(-Math.sin(orbit.yaw),0,-Math.cos(orbit.yaw));
+      clingUp.addScaledVector(clingNormal,-clingUp.dot(clingNormal));
+    }
+    if(clingUp.lengthSq()>1e-6) clingUp.normalize();
+    shellAxle.crossVectors(clingUp,clingNormal);
+    if(shellAxle.lengthSq()<1e-6) shellAxle.set(Math.cos(orbit.yaw),0,-Math.sin(orbit.yaw));
+    if(shellAxle.lengthSq()>1e-6){
+      shellAxle.normalize();
+      if(strafeAxis.lengthSq()>1e-6 && shellAxle.dot(strafeAxis)<0) shellAxle.negate();
+      strafeAxis.copy(shellAxle);
+    }
+    desired.set(0,0,0).addScaledVector(clingUp,-kz).addScaledVector(shellAxle,kx);
+    if(desired.lengthSq()>1e-6) desired.normalize().multiplyScalar(2.45);
+    else desired.set(0,0,0);
+    velocity.lerp(desired,ease(desired.lengthSq()?6:8,dt));
+    velocity.addScaledVector(clingNormal,-velocity.dot(clingNormal));
+    if(velocity.lengthSq()<0.0001) velocity.set(0,0,0);
+    location.addScaledVector(velocity,dt);
+    const placed=rig.wrap?rig.wrap(location.x,location.y,location.z,.32):rig.project(clingFace,location.x,location.y,location.z);
+    if(!placed || placed.drop || placed.y<rig.minY+0.2){
+      leapOffTower();
+      airY=Math.max(location.y,rig.minY);
+      verticalSpeed=1.1;
+      releaseCling();
+      setMode('jumping');
+      return;
+    }
+    clingFace=placed.face;
+    clingNormal.set(placed.nx,placed.ny,placed.nz);
+    location.set(placed.x,placed.y,placed.z);
+    velocity.addScaledVector(clingNormal,-velocity.dot(clingNormal));
+    const radius=glyphScale*(.91+.19*Math.cos(2*roll)+.09*Math.cos(roll));
+    if(velocity.lengthSq()>0.0004) roll=wrap(roll-velocity.length()*dt/radius);
+    orientRoll(dt);
+    if(velocity.lengthSq()>0.02) heading=Math.atan2(-velocity.z,velocity.x);
+  }
   function jump(){
-    if(homing||mode!=='ground') return;
+    if(homing||(mode!=='ground'&&!cling)) return;
+    if(cling){
+      if(clingNormal.y>.55){
+        roofDrop=true;
+        flight.yaw=wrap(orbit.yaw+Math.PI);
+        flight.pitch=-.28; flight.bank=0; flight.speed=7.4; flight.takeoff=0;
+        airY=location.y; verticalSpeed=0;
+        heading=Math.atan2(-Math.cos(orbit.yaw),Math.sin(orbit.yaw));
+        releaseCling();
+        clingLock=.2; hop=0; jumpSpeed=0;
+        setMode('landing');
+        lookFree=true; lookOffset=Math.PI;
+        travelStatus.textContent='탑 위에서 뒤쪽으로 내려앉습니다.';
+        return;
+      }
+      leapOffTower();
+      airY=location.y;
+      verticalSpeed=Math.max(1.4,clingNormal.y*2+1.2);
+      releaseCling();
+      hop=0; jumpSpeed=0;
+      setMode('jumping');
+      return;
+    }
     airY=eight.position.y; verticalSpeed=5.8;
     hop=0; jumpSpeed=0;
     setMode('jumping');
   }
   function toggleFlight(){
     if(homing) return;
+    roofDrop=false;
     if(mode==='flying'){
       setMode('landing');
       return;
     }
     if(mode!=='landing'){
-      flight.yaw=orbit.yaw; flight.bank=0; flight.pitch=.26;
-      flight.speed=Math.max(2.3,velocity.length());
-      verticalSpeed=mode==='jumping'?Math.max(verticalSpeed,1.9):1.9;
+      flight.yaw=orbit.yaw; flight.bank=0; flight.pitch=.16;
+      flight.speed=Math.max(7.2,velocity.length());
+      verticalSpeed=mode==='jumping'?Math.max(verticalSpeed,2.2):1.6;
+    }else{
+      verticalSpeed=Math.max(verticalSpeed,1.6);
+      flight.speed=Math.max(flight.speed,7.2);
     }
-    airY=eight.position.y; flight.takeoff=1.15;
+    airY=eight.position.y; flight.takeoff=.68;
     hop=0; jumpSpeed=0;
     setMode('flying');
   }
@@ -384,7 +545,7 @@
     if(e.detail>0&&e.target?.closest?.('button')) canvas.focus({preventScroll:true});
   });
   function clearInput(){held.clear(); pointerKeys.clear(); drag=null;}
-  let drag=null, lookFree=false;
+  let drag=null, lookFree=false, lookOffset=0;
   window.addEventListener('keydown',e=>{
     if(e.isComposing||e.key==='Process') return;
     if(e.code==='F5'||((e.ctrlKey||e.metaKey)&&e.code==='KeyR')){
@@ -432,9 +593,12 @@
     if (!drag || drag.id!==e.pointerId) return;
     if(Math.hypot(e.clientX-drag.ox, e.clientY-drag.oy)>5){
       drag.moved=true;
-      if((mode==='flying'||mode==='landing') && !homing) lookFree=true;
+      if(mode==='flying'||mode==='landing'){
+        lookFree=true;
+        lookOffset=wrap(orbit.yaw-flight.yaw);
+      }
     }
-    orbit.yaw-=(e.clientX-drag.x)*.006; orbit.pitch=T.MathUtils.clamp(orbit.pitch+(e.clientY-drag.y)*.004,-.03,.83);
+    orbit.yaw-=(e.clientX-drag.x)*.006; orbit.pitch=T.MathUtils.clamp(orbit.pitch+(e.clientY-drag.y)*.0045,-1.2,.83);
     drag.x=e.clientX; drag.y=e.clientY;
   });
   for(const name of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(name,e=>{
@@ -442,7 +606,13 @@
     const tap=name==='pointerup' && !drag.moved;
     const x=e.clientX, y=e.clientY;
     drag=null;
-    if(tap) previews.press(x, y);
+    if(tap){
+      const work=previews.press(x, y);
+      if(work && !cliffFade && !warp && mode!=='falling' && Math.hypot(location.x-work.x,location.z-work.z)>4){
+        const floor=groundAt(work.x,work.z);
+        if(Number.isFinite(floor)) beginCliffFade(performance.now(), work);
+      }
+    }
   });
 
   function pose() {
@@ -475,12 +645,16 @@
   function fly(dt,turn,climb,guide){
     const landing=mode==='landing';
     const guided=!!guide;
+    const arcLanding=(landing && !guided) || !!(guided && guide.arc);
     flight.takeoff=Math.max(0,flight.takeoff-dt);
-    const targetPitch=guided?(guide.drop?-.04:climb*.55+.1):landing?-.08:climb*.55+.36*flight.takeoff/1.15;
-    flight.pitch+= (targetPitch-flight.pitch)*ease(guided?2.2:3.5,dt);
-    flight.bank+= (-turn*1.2-flight.bank)*ease(guided?4:11,dt);
+    flight.bank+= (-turn*1.2-flight.bank)*ease(guided?5:11,dt);
     if(!guided) flight.yaw=wrap(flight.yaw-turn*2.6*dt+Math.sin(flight.bank)*.85*dt);
-    if(!guided) flight.speed+=((landing?1.05:6.9-.9*Math.sin(flight.pitch))-flight.speed)*ease(landing?2.4:1.2,dt);
+    if(arcLanding){
+      const glide=guide&&guide.glide!=null?guide.glide:Math.max(6.6,flight.speed);
+      flight.speed+=(glide-flight.speed)*ease(guided?4.5:3.2,dt);
+      if(roofDrop) verticalSpeed+=(0-verticalSpeed)*ease(8,dt);
+      else verticalSpeed=Math.max(guided?-16:-20,verticalSpeed-(guided?14:16.5)*dt);
+    }else if(!guided) flight.speed+=((9.4-.4*Math.sin(flight.pitch))-flight.speed)*ease(3.1,dt);
     const forwardSpeed=flight.speed*Math.cos(Math.max(0,flight.pitch));
     velocity.set(-Math.sin(flight.yaw)*forwardSpeed,0,-Math.cos(flight.yaw)*forwardSpeed);
     if(!(guided&&guide.drop)) location.addScaledVector(velocity,dt);
@@ -492,25 +666,31 @@
       startFall();
       return;
     }
-    const dropGap=Math.max(0,airY-(supported?location.y:airY));
-    const descent=landing?Math.min(2.35,.7+dropGap*.2):0;
-    const targetVertical=guided&&guide.drop?-guide.sink:guided&&guide.hold!=null?guide.hold:landing?-descent:flight.speed*Math.sin(flight.pitch);
-    verticalSpeed+=(targetVertical-verticalSpeed)*ease(guided?2.2:4,dt);
+    if(!arcLanding){
+      const targetVertical=guided&&guide.drop?-guide.sink:guided&&guide.hold!=null?guide.hold:flight.speed*Math.sin(flight.pitch);
+      verticalSpeed+=(targetVertical-verticalSpeed)*ease(guided?5.4:5.6,dt);
+    }
     airY+=verticalSpeed*dt;
+    if(roofDrop) holdRoofDrop();
+    else shaveShell();
+    if(mode==='ground') return;
+    const targetPitch=roofDrop?-.42:guided&&!arcLanding?(guide.drop?-.04:climb*.55+.12):arcLanding?T.MathUtils.clamp(Math.atan2(verticalSpeed,Math.max(2.4,flight.speed)),-.9,.32):climb*.24+.14*flight.takeoff/.68;
+    flight.pitch+=(targetPitch-flight.pitch)*ease(arcLanding?11:guided?5.2:4.6,dt);
 
     previousAttitude.copy(eight.quaternion);
     const lobe=supported&&pose()>.08?1:-1;
     const restingY=supported?eight.position.y:airY-2;
     if(!supported) eight.position.set(location.x,airY,location.z);
-    if(supported && (landing||(guided&&guide.drop)) && airY<=restingY){
+    if(supported && (landing||(guided&&(guide.drop||guide.arc))) && airY<=restingY){
+      roofDrop=false;
       verticalSpeed=0; flight.speed=0; velocity.set(0,0,0);
       if(!homing){lastLobe=lobe;impactDelay=.16;wasMoving=true;wobbleSpeed=.4;knock(1.1,lobe);}
       else wobbleSpeed=.18;
       setMode('ground');
       return;
     }
-    if(supported && !landing && !(guided&&guide.drop)){
-      const launchBlend=1-flight.takeoff/1.15;
+    if(supported && !landing && !(guided&&(guide.drop||guide.arc))){
+      const launchBlend=1-flight.takeoff/.68;
       const clearance=location.y+.68/groundNormal.y;
       const floor=T.MathUtils.lerp(restingY,Math.max(restingY,clearance),launchBlend);
       if(airY<floor){airY=floor;verticalSpeed=Math.max(0,verticalSpeed);}
@@ -536,10 +716,10 @@
     if(!homing){
       if(distance<.45&&!settleHome) return;
       clearInput(); velocity.set(0,0,0);
-      homing=true; homeStage='climb'; lookFree=false;
+      homing=true; homeStage='climb'; lookFree=false; lookOffset=0;
       flight.yaw=distance<.25?orbit.yaw:Math.atan2(dx,dz);
-      flight.bank=0; flight.pitch=.42; flight.speed=2.2; flight.takeoff=1.15;
-      airY=eight.position.y; verticalSpeed=2.4;
+      flight.bank=0; flight.pitch=.55; flight.speed=5.1; flight.takeoff=.68;
+      airY=eight.position.y; verticalSpeed=6.2;
       hop=jumpSpeed=0;
       setMode('flying');
     }
@@ -577,33 +757,39 @@
     if(homeStage==='hover') hoverTime+=dt; else hoverTime=0;
     const rush=!!homeTarget.rush;
     if(homeStage==='climb'){
-      if(flight.takeoff<=.05&&altitude>(rush?3.2:6.2)) homeStage=distance<3.2?'hover':'cruise';
-    }else if(homeStage==='cruise'&&distance<3.2&&flight.speed<(rush?4.2:2.6)) homeStage='hover';
-    else if(homeStage==='hover'&&(hoverTime>(rush?.28:1.5)||(distance<.55&&flight.speed<.8))) homeStage='down';
-    if(homeStage!=='down'&&distance>.3){
+      if(flight.takeoff<=.05&&altitude>(rush?2.2:4.4)) homeStage=distance<6.2?'down':'cruise';
+    }else if(homeStage==='cruise'&&distance<6.2) homeStage='down';
+    else if(homeStage==='hover'&&(hoverTime>(rush?.1:.22)||distance<.4)) homeStage='down';
+    if(homeStage!=='hover'&&distance>.4){
       const desired=Math.atan2(dx,dz);
-      flight.yaw+=wrap(desired-flight.yaw)*Math.min(1,dt*(distance<5?2.2:3.5));
+      flight.yaw+=wrap(desired-flight.yaw)*Math.min(1,dt*(distance<8?4.2:5));
     }
     flight.bank*=Math.max(0,1-dt*5);
     let speedGoal=0, climb=0, guide=null;
     if(homeStage==='climb'){
-      speedGoal=rush?Math.min(7.5,Math.max(distance,2.4)):Math.min(2.8,Math.max(distance,1.2)); climb=1; guide={};
+      speedGoal=rush?Math.min(9,Math.max(distance,3.6)):Math.min(6.8,Math.max(distance,4.2)); climb=1; guide={};
     }else if(homeStage==='cruise'){
-      speedGoal=rush?(distance>18?12:distance>8?8.4:3.2):(distance>22?6.2:distance>10?3.6:1.7);
-      climb=altitude<(rush?4:6)?.4:altitude>(rush?6.4:8.6)?-.25:0; guide={};
+      speedGoal=rush?(distance>18?13:distance>8?9:4.5):(distance>16?9.5:distance>7?7.2:5);
+      climb=altitude<(rush?3.2:4)?.5:altitude>(rush?5.2:6.2)?-.3:0; guide={};
     }else if(homeStage==='hover'){
-      speedGoal=0; guide={hold:altitude<(rush?3.2:5.6)?.6:altitude>(rush?5:7.2)?-.45:0};
+      speedGoal=0; guide={hold:altitude<3.2?.8:altitude>5?-.6:0};
     }else{
-      speedGoal=0; guide={drop:true, sink:rush?Math.min(4.4,1.35+Math.max(0,altitude)*.32):Math.min(2.15,.65+Math.max(0,altitude)*.16)};
+      const dropTime=Math.sqrt(2*Math.max(altitude,.35)/(rush?16:14));
+      speedGoal=Math.min(rush?9:7.4, distance/Math.max(.35,dropTime));
+      guide={arc:true, glide:speedGoal};
     }
-    flight.speed+=(speedGoal-flight.speed)*Math.min(1,dt*3);
-    if(homeStage==='hover'||homeStage==='down') flight.speed*=Math.max(0,1-dt*3.4);
+    flight.speed+=(speedGoal-flight.speed)*Math.min(1,dt*(homeStage==='climb'?6.5:4.2));
+    if(homeStage==='hover') flight.speed*=Math.max(0,1-dt*4);
     fly(dt,0,climb,guide);
-    if(homeStage==='hover'||homeStage==='down'){
-      const pull=Math.min(1,dt*(homeStage==='down'?2.6:1.8));
+    if(homeStage==='hover'){
+      const pull=Math.min(1,dt*2.4);
       location.x+=(homeTarget.x-location.x)*pull;
       location.z+=(homeTarget.z-location.z)*pull;
       velocity.set(0,0,0);
+    }else if(homeStage==='down'&&altitude<1.6){
+      const pull=Math.min(1,dt*3);
+      location.x+=(homeTarget.x-location.x)*pull;
+      location.z+=(homeTarget.z-location.z)*pull;
     }
     if(mode==='ground') finishTravel();
   }
@@ -632,11 +818,32 @@
     veilFill.style.opacity=fill.toFixed(3);
   }
   let fallStartedAt=0, cliffFade=null;
-  function beginCliffFade(now){
-    if(cliffFade) return;
-    cliffFade={start:now, placed:false};
+  function beginCliffFade(now, target){
+    if(cliffFade||warp) return;
+    if(homing){homing=false; hoverTime=0;}
+    cliffFade={start:now, placed:false, x:target?target.x:null, z:target?target.z:null, lookX:target&&target.lookX, lookZ:target&&target.lookZ};
     veil.hidden=false;
-    travelStatus.textContent='화면이 걷히며 처음 위치로 돌아갑니다';
+    travelStatus.textContent=target?'화면이 걷히며 그 전시로 이동합니다':'화면이 걷히며 처음 위치로 돌아갑니다';
+  }
+  function placeFadeTarget(){
+    releaseCling();
+    clearInput();
+    velocity.set(0,0,0); verticalSpeed=0; hop=0; jumpSpeed=0;
+    flight.speed=0; flight.bank=0;
+    location.x=cliffFade.x; location.z=cliffFade.z;
+    const floor=groundAt(location.x,location.z,groundNormal);
+    if(Number.isFinite(floor)) location.y=floor;
+    airY=location.y;
+    setMode('ground');
+    resolveShell(location.y+.32);
+    const dx=(cliffFade.lookX??cliffFade.x)-location.x, dz=(cliffFade.lookZ??cliffFade.z)-location.z;
+    if(Math.hypot(dx,dz)>0.8){
+      orbit.yaw=Math.atan2(-dx,-dz);
+      orbit.pitch=.1;
+      heading=Math.atan2(-dz,dx);
+    }
+    if(cling) orientRoll(0); else pose();
+    view(0,true); updateCoords();
   }
   function updateCliffFade(now){
     if(!cliffFade) return;
@@ -654,8 +861,8 @@
     else cover=1-fade((t-rise-hold)/fall);
     if(t>=rise && !cliffFade.placed){
       cliffFade.placed=true;
-      reset();
-      travelStatus.textContent='처음 위치가 보입니다';
+      if(cliffFade.x==null){reset(); travelStatus.textContent='처음 위치가 보입니다';}
+      else{placeFadeTarget(); travelStatus.textContent='그 전시에 도착했습니다';}
     }
     veilMist.style.opacity=String(cover);
     veilMist.style.transform='none';
@@ -663,6 +870,7 @@
   }
   function startFall(){
     if(mode==='falling'||homing) return;
+    roofDrop=false;
     airY=eight.position.y;
     verticalSpeed=Math.min(0, verticalSpeed, jumpSpeed);
     hop=0; jumpSpeed=0;
@@ -685,15 +893,34 @@
       if(keyDir[key]){x+=keyDir[key][0];z+=keyDir[key][1];}
     }
     if(mode==='flying'||mode==='landing'){
+      if(cling) releaseCling();
       fly(dt,Math.sign(x),-Math.sign(z));return;
     }
     desired.set(x,0,z);
     if(desired.lengthSq()>0){
       desired.normalize().applyAxisAngle(up,orbit.yaw);
-      const uphill=-groundNormal.dot(desired)/groundNormal.y;
-      desired.multiplyScalar(2.60*T.MathUtils.clamp(1-.50*uphill,.70,1.30));
+      if(!cling){
+        const uphill=-groundNormal.dot(desired)/groundNormal.y;
+        desired.multiplyScalar(2.60*T.MathUtils.clamp(1-.50*uphill,.70,1.30));
+      }
     }
+    if(clingShove){ velocity.add(clingShove); clingShove=null; }
+    clingLock=Math.max(0,clingLock-dt);
+    if(!cling && mode==='ground' && z<0 && shellLeap<=0){
+      const rig=window.STUDIO_CLING;
+      const blocked=rig&&rig.pushOut(location.x,location.y+.45,location.z,2.2);
+      if(blocked&&blocked.ny<.5) mountShell(blocked);
+    }
+    if(cling){ crawlSculpture(dt); return; }
     velocity.lerp(desired,ease(x||z?4.5:6.8,dt));
+    if(shellLeap>0){
+      shellLeap=Math.max(0,shellLeap-dt);
+      const aheadX=location.x+shellLeapDir.x*.8, aheadZ=location.z+shellLeapDir.z*.8;
+      if(Number.isFinite(groundAt(aheadX,aheadZ))){
+        velocity.x=shellLeapDir.x*8;
+        velocity.z=shellLeapDir.z*8;
+      }else shellLeap=0;
+    }
     if(velocity.lengthSq()<.0001) velocity.set(0,0,0);
     const speed=velocity.length();
     location.addScaledVector(velocity,dt);
@@ -704,6 +931,7 @@
     }
     exhibition.constrain(location, mode==='jumping'?airY:surface);
     location.y=surface;
+    if(mode==='ground'&&resolveShell(location.y+.32)) return;
     // Steer the wheel toward travel. A little sideways slip keeps the two holes visible.
     if(speed>.045){
       let target=Math.atan2(-velocity.z,velocity.x);
@@ -724,6 +952,7 @@
     let lobe=pose()>.08?1:-1;
     if(mode==='jumping'){
       verticalSpeed-=12.8*dt; airY+=verticalSpeed*dt;
+      if(resolveShell(airY)) return;
       const gap=airY-eight.position.y;
       if(gap<=0 && verticalSpeed<=0){
         knock(Math.min(2.7,-verticalSpeed*.4),lobe);
@@ -751,7 +980,10 @@
       followPoint.y=airY-.2;
     }else if(mode==='flying'||mode==='landing'){
       followPoint.y=Math.max(location.y,eight.position.y-.36);
-      if(!drag && (!lookFree || homing)) orbit.yaw+=wrap(flight.yaw-orbit.yaw)*ease(homing?8:3.2,dt);
+      if(drag||lookFree){
+        if(drag) lookOffset=wrap(orbit.yaw-flight.yaw);
+        orbit.yaw=wrap(flight.yaw+lookOffset);
+      }else orbit.yaw+=wrap(flight.yaw-orbit.yaw)*ease(homing?8:3.2,dt);
     }else if(mode==='jumping'){
       followPoint.y+=Math.max(0,eight.position.y-location.y-.32)*.32;
     }
@@ -772,11 +1004,12 @@
       }
     }
     const horizontal=Math.cos(orbit.pitch)*radius;
-    gaze.set(follow.x,follow.y+.87,follow.z);
+    const lookUp=Math.max(0,-orbit.pitch);
+    gaze.set(follow.x,follow.y+.87+lookUp*radius*.92,follow.z);
     cameraGoal.set(follow.x+Math.sin(orbit.yaw)*horizontal,gaze.y+Math.sin(orbit.pitch)*radius,follow.z+Math.cos(orbit.yaw)*horizontal);
     camera.position.lerp(cameraGoal,snap?1:ease(17,dt));
     // Raise the eye enough to keep the sight line above any intervening ridge.
-    if(mode!=='falling') for(let i=1;i<=8;i++){
+    if(mode!=='falling' && orbit.pitch>-0.08) for(let i=1;i<=8;i++){
       const t=i/8;
       const x=T.MathUtils.lerp(eight.position.x,camera.position.x,t);
       const z=T.MathUtils.lerp(eight.position.z,camera.position.z,t);
@@ -804,7 +1037,53 @@
     airY=0;verticalSpeed=0;setMode('ground');
     pose();view(0,true);updateCoords();
   }
-  window.STUDIO_TRAVEL=(x,z)=>flyTo(x,z,false);
+  let warp=null;
+  function beginWarp(x,z){
+    if(cliffFade) return;
+    const ground=groundAt(x,z);
+    if(!Number.isFinite(ground)) return;
+    if(!warp && Math.hypot(location.x-x,location.z-z)<.6) return;
+    if(homing){homing=false; hoverTime=0;}
+    arrival=null; clearInput(); velocity.set(0,0,0);
+    if(warp){
+      warp.x=x; warp.z=z;
+      if(performance.now()-warp.start>280){warp.start=performance.now()-280; warp.placed=false;}
+      return;
+    }
+    warp={start:performance.now(), x, z, placed:false};
+    veil.hidden=false;
+    veilMist.style.opacity='0';
+    veilMist.style.transform='none';
+    travelStatus.textContent='화면이 하얗게 걷히며 그 위치로 이동합니다';
+  }
+  function updateWarp(now){
+    if(!warp) return;
+    const rise=280, hold=110, fall=460, t=now-warp.start;
+    const fade=u=>{const x=Math.min(1,Math.max(0,u)); return x*x*(3-2*x);};
+    if(t>=rise+hold+fall){
+      veilMist.style.opacity='0'; veilFill.style.opacity='0';
+      veil.hidden=true; warp=null;
+      travelStatus.textContent='지상';
+      return;
+    }
+    const cover=t<rise?fade(t/rise):t<rise+hold?1:1-fade((t-rise-hold)/fall);
+    if(t>=rise && !warp.placed){
+      warp.placed=true;
+      location.x=warp.x; location.z=warp.z;
+      const floor=groundAt(location.x,location.z,groundNormal);
+      if(Number.isFinite(floor)) location.y=floor;
+      hop=jumpSpeed=wobbleSpeed=0; verticalSpeed=0; airY=location.y;
+      flight.speed=0; flight.bank=0;
+      setMode('ground');
+      if(!resolveShell(location.y+.32)) pose();
+      view(0,true); updateCoords();
+      travelStatus.textContent='그 위치에 도착했습니다';
+    }
+    veilMist.style.opacity='0';
+    veilMist.style.transform='none';
+    veilFill.style.opacity=String(cover);
+  }
+  window.STUDIO_TRAVEL=(x,z)=>beginWarp(x,z);
   document.querySelector('#home').addEventListener('click',returnHome);
   document.querySelector('#home-title').addEventListener('click',returnHome);
   function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();view(0,true);}
@@ -813,10 +1092,11 @@
   renderer.setAnimationLoop(now=>{
     const elapsed=Math.min(Math.max((now-last)*.001,0),.07);last=now;
     const steps=Math.max(1,Math.ceil(elapsed/(1/90)));
-    if(mode==='falling' && !cliffFade && now-fallStartedAt>=900) beginCliffFade(now);
-    if(!paused&&!document.hidden && !cliffFade) for(let i=0;i<steps;i++){
+    if(mode==='falling' && !cliffFade && !warp && now-fallStartedAt>=900) beginCliffFade(now);
+    updateWarp(now);
+    if(!paused&&!document.hidden && !cliffFade && !warp) for(let i=0;i<steps;i++){
       if(homing) stepHome(elapsed/steps); else move(elapsed/steps);
-    }else if(!paused&&!document.hidden && cliffFade && !cliffFade.placed) fall(elapsed);
+    }else if(!paused&&!document.hidden && cliffFade && !cliffFade.placed && cliffFade.x==null) fall(elapsed);
     updateCliffFade(now);
     if(arrival){
       const k=Math.min(1,elapsed*2.2);

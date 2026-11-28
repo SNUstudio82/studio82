@@ -61,17 +61,29 @@
       return [-width + wobble * (1.3 * Math.sin(z * 0.092) + 0.85 * Math.cos(z * 0.19)), width + wobble * (1.7 * Math.sin(z * 0.085 - 0.8) + 0.55 * Math.sin(z * 0.29))];
     }
     function shoreRadius(lake, angle) { return lake.r * (1 + 0.018 * Math.sin(3 * angle + 0.5) + 0.014 * Math.cos(5 * angle - 0.3)); }
-    function landform(x, z, bounds) {
-      const lake = z < 0 ? lakes[0] : lakes[1], angle = Math.atan2(z - lake.z, x);
+    function shoreHeight(x, z, bounds, north) {
+      const lake = north ? lakes[1] : lakes[0], angle = Math.atan2(z - lake.z, x);
       const shore = Math.hypot(x, z - lake.z) - shoreRadius(lake, angle);
       const margin = Math.min(x - bounds[0], bounds[1] - x, z - zMin, zMax - z);
       const folds = Math.sin(x * 0.077 + 1.12 * Math.cos(z * 0.051)) + Math.sin(z * 0.113 + x * 0.046) * 0.65;
       const grains = 0.17 * Math.cos(x * 0.91 + z * 0.44) * Math.sin(z * 0.95) + 0.34 * Math.sin(z * 0.37 + x * 0.28) * Math.cos(x * 0.42);
       const hillside = 3.4 + 2.9 * folds + grains + (5.5 + 2 * Math.sin(z * 0.24)) * Math.exp(-(Math.max(0, margin - 1) ** 2) / 130);
-      const north = z >= 0;
       const t = T.MathUtils.smoothstep(shore, 0, north ? 34 : 22);
       const raw = shore < 0 ? -1 + Math.max(north ? -9.2 : -3.7, shore * (north ? 0.2 : 0.29)) : mix(-1 + shore * (north ? 0.09 : 0.16), hillside, t);
       return -1 + (raw + 1) * 0.58;
+    }
+    // The two lake profiles used to switch on one row at z = 0, leaving a cliff
+    // across the waist. A shallow shelf there keeps the granite on its flat grain.
+    function landform(x, z, bounds) {
+      const natural = shoreHeight(x, z, bounds, z >= 0);
+      const span = 14;
+      const yN = shoreHeight(x, span, edges(span), true);
+      const yS = shoreHeight(x, -span, edges(-span), false);
+      const u = T.MathUtils.smoothstep(z, -span, span);
+      const shelf = mix(yS, yN, u);
+      const reach = 1 - T.MathUtils.smoothstep(Math.abs(x), 28, 48);
+      const mid = 1 - T.MathUtils.smoothstep(Math.abs(z), span - 6, span);
+      return mix(natural, shelf, reach * mid);
     }
     const pads = SITES.map(([sx, sz]) => ({sx, sz, y: landform(sx, sz, edges(sz))}));
     const padCore = 11, padReach = 24;
@@ -227,12 +239,14 @@
         diffuseColor.a=0.22+light*.2;
         diffuseColor.rgb=mix(diffuseColor.rgb, vec3(.72,.88,.95), uUnder*.55);
         diffuseColor.a=mix(diffuseColor.a, .48, uUnder*.7);
-        float lakeMask=1.-smoothstep(uLakeR*.72, uLakeR*1.05, length(waterXZ-uLake));
+        float lakeMask=1.-smoothstep(uLakeR*.94, uLakeR*1.06, length(waterXZ-uLake));
         float tide=0.5+0.5*sin(p.x*0.16+p.y*0.09-tLake*0.18);
         float tide2=0.5+0.5*sin(p.y*0.055-p.x*0.04+tLake*0.11);
         vec3 wash=mix(uPigment, uPigmentB, tide);
         wash=mix(wash, uPigmentC, tide2*0.65);
-        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*0.96);`);
+        diffuseColor.rgb=mix(diffuseColor.rgb, wash, uMood*lakeMask*0.96);
+        float aboveSkin=uMood*lakeMask*clamp(1.-uUnder,0.,1.);
+        diffuseColor.a=mix(diffuseColor.a, 0.7, aboveSkin*0.88);`);
     };
     const waters = lakes.map(lake => {
       const v = [0, waterLevel, lake.z * LAND], idx = [];

@@ -153,6 +153,149 @@
     motes.frustumCulled = false;
     rig.add(motes);
 
+    const BUBBLE_CAP = 180;
+    const bubbleLifeAttr = new Float32Array(BUBBLE_CAP);
+    const bubbleTintAttr = new Float32Array(BUBBLE_CAP * 3);
+    const bubbleGeom = new T.SphereGeometry(1, 10, 8);
+    bubbleGeom.setAttribute('aLife', new T.InstancedBufferAttribute(bubbleLifeAttr, 1));
+    bubbleGeom.setAttribute('aTint', new T.InstancedBufferAttribute(bubbleTintAttr, 3));
+    const bubbleMat = new T.ShaderMaterial({
+      transparent: true, depthWrite: false, toneMapped: false, fog: false,
+      blending: T.CustomBlending, blendSrc: T.OneFactor, blendDst: T.OneMinusSrcAlphaFactor,
+      uniforms: {},
+      vertexShader: `
+        attribute float aLife;
+        attribute vec3 aTint;
+        varying float vLife;
+        varying vec3 vTint;
+        varying vec3 vNormal;
+        varying vec3 vView;
+        void main() {
+          vLife = aLife;
+          vTint = aTint;
+          vec4 worldPos = modelMatrix * instanceMatrix * vec4(position, 1.0);
+          vec4 viewPos = viewMatrix * worldPos;
+          vView = -viewPos.xyz;
+          vNormal = normalize(mat3(viewMatrix * modelMatrix) * mat3(instanceMatrix) * normal);
+          gl_Position = projectionMatrix * viewPos;
+        }`,
+      fragmentShader: `
+        varying float vLife;
+        varying vec3 vTint;
+        varying vec3 vNormal;
+        varying vec3 vView;
+        void main() {
+          vec3 n = normalize(vNormal);
+          float rim = pow(1.0 - clamp(dot(n, normalize(vView)), 0.0, 1.0), 2.4);
+          float glint = pow(clamp(dot(n, normalize(vec3(-0.45, 0.65, -0.6))), 0.0, 1.0), 28.0);
+          float fadeIn = smoothstep(0.0, 0.12, vLife);
+          float fadeOut = 1.0 - smoothstep(0.78, 1.0, vLife);
+          float alpha = (rim * 0.75 + glint + 0.045) * 0.62 * fadeIn * fadeOut;
+          vec3 colour = mix(vTint, vec3(1.0), clamp(glint, 0.0, 1.0));
+          gl_FragColor = vec4(colour * alpha, alpha);
+        }`
+    });
+    const bubbleMesh = new T.InstancedMesh(bubbleGeom, bubbleMat, BUBBLE_CAP);
+    bubbleMesh.name = 'ending-bubbles';
+    bubbleMesh.frustumCulled = false;
+    bubbleMesh.renderOrder = 3;
+    bubbleMesh.count = 0;
+    group.add(bubbleMesh);
+    const bubbleDummy = new T.Object3D();
+    const bubbleColour = new T.Color();
+    const bubblePool = Array.from({length: BUBBLE_CAP}, () => ({
+      x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, age: 0, life: 1, size: 0, r: 1, g: 1, b: 1, on: false
+    }));
+    let bubbleCursor = 0;
+    const bubbleTrails = new Map();
+
+    function spawnBubble(x, y, z, vx, vy, vz, size, life, color) {
+      const bubble = bubblePool[bubbleCursor];
+      bubbleCursor = (bubbleCursor + 1) % BUBBLE_CAP;
+      bubble.on = true;
+      bubble.x = x;
+      bubble.y = y;
+      bubble.z = z;
+      bubble.vx = vx;
+      bubble.vy = vy;
+      bubble.vz = vz;
+      bubble.age = 0;
+      bubble.life = life;
+      bubble.size = size;
+      bubble.r = color.r;
+      bubble.g = color.g;
+      bubble.b = color.b;
+    }
+
+    function trailBubbles(key, x0, y0, z0, x1, y1, z1, dt, color) {
+      if (dt <= 0) return;
+      const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+      const distance = Math.hypot(dx, dy, dz);
+      let slot = bubbleTrails.get(key);
+      if (!slot) {
+        slot = {budget: 0, distance: 0};
+        bubbleTrails.set(key, slot);
+      }
+      if (!Number.isFinite(distance) || distance > 2.4 || distance / dt < 0.1) {
+        slot.distance = 0;
+        return;
+      }
+      const spacing = key === 'player' ? 0.2 : 0.42;
+      slot.budget = Math.min(2.4, slot.budget + dt * (key === 'player' ? 9 : 4.5));
+      slot.distance = Math.min(0.9, slot.distance + distance);
+      const count = Math.min(2, Math.floor(slot.budget), Math.floor(slot.distance / spacing));
+      if (count < 1) return;
+      slot.budget -= count;
+      slot.distance -= count * spacing;
+      const spread = key === 'player' ? 0.05 : 0.08;
+      for (let i = 0; i < count; i++) {
+        const t = (i + 0.5) / count;
+        spawnBubble(
+          x0 + dx * t + (Math.random() - 0.5) * spread,
+          y0 + dy * t + (Math.random() - 0.5) * spread * 0.6,
+          z0 + dz * t + (Math.random() - 0.5) * spread,
+          dx / dt * 0.08 + (Math.random() - 0.5) * 0.05,
+          0.16 + Math.random() * 0.22,
+          dz / dt * 0.08 + (Math.random() - 0.5) * 0.05,
+          (key === 'player' ? 0.045 : 0.055) + Math.random() * 0.06,
+          1.25 + Math.random() * 1.15,
+          color
+        );
+      }
+    }
+
+    function stepBubbles(dt) {
+      let visible = 0;
+      const ceiling = waterLevel - 0.04;
+      for (let i = 0; i < BUBBLE_CAP; i++) {
+        const bubble = bubblePool[i];
+        if (!bubble.on) continue;
+        bubble.age += dt;
+        bubble.x += bubble.vx * dt;
+        bubble.y += bubble.vy * dt;
+        bubble.z += bubble.vz * dt;
+        if (bubble.age >= bubble.life || bubble.y >= ceiling) {
+          bubble.on = false;
+          continue;
+        }
+        bubbleDummy.position.set(bubble.x, bubble.y, bubble.z);
+        bubbleDummy.scale.setScalar(bubble.size);
+        bubbleDummy.updateMatrix();
+        bubbleMesh.setMatrixAt(visible, bubbleDummy.matrix);
+        bubbleLifeAttr[visible] = bubble.age / bubble.life;
+        bubbleTintAttr[visible * 3] = bubble.r;
+        bubbleTintAttr[visible * 3 + 1] = bubble.g;
+        bubbleTintAttr[visible * 3 + 2] = bubble.b;
+        visible++;
+      }
+      bubbleMesh.count = visible;
+      if (visible) {
+        bubbleMesh.instanceMatrix.needsUpdate = true;
+        bubbleGeom.attributes.aLife.needsUpdate = true;
+        bubbleGeom.attributes.aTint.needsUpdate = true;
+      }
+    }
+
     const WAKE_POINTS = 400;
     const WAKE_STEPS = 6;
     const WAKE_SPAN = WAKE_POINTS * WAKE_STEPS;
@@ -207,6 +350,7 @@
     let failed = false;
     let visitor = null;
     let lastSpecies = null;
+    const recentPalettes = [];
     let dwell = 0;
     let nextInvite = 0;
     let lastTime = -1;
@@ -214,6 +358,8 @@
     let prevX = 0;
     let prevZ = 0;
     let prevY = 0;
+    let rideY = 0;
+    let rideReady = false;
     const mood = {ready: false};
     const underFog = new T.Color(0x1a5260);
     const underSun = new T.Color(0xd4f0f8);
@@ -290,31 +436,34 @@ vec3 articulateSea(vec3 original){
 
     // Each fish keeps one harmony. The five stops are ordered so lines and the body can grade through them.
     const PALETTES = [
-      ['#f2b48e', '#f0a8c0', '#d7b4e6', '#b9c6f0', '#f7ead8'],
-      ['#f6c0a4', '#f0a8b0', '#d9a8cc', '#c4b6e4', '#e8e4f6'],
-      ['#f3e2a0', '#f6c8a4', '#f3b8c8', '#e4c8ee', '#fbf4e6'],
-      ['#e7e6a4', '#c9d6a8', '#b7e2c8', '#b7d4f0', '#e4eef8'],
-      ['#d4e6a8', '#b9e0c8', '#b4ddd8', '#c4d0f0', '#dcc8ee'],
-      ['#bfe6d0', '#b7d6f2', '#d0c4ee', '#f0b8cc', '#f6d0b4'],
-      ['#c9d4b4', '#e6d4b0', '#f0d8a4', '#f0c0c8', '#dcc8e6'],
-      ['#b8e4dc', '#c8e4f2', '#c8c8ee', '#e0b4d0', '#f6eee4'],
-      ['#b9d6f4', '#c4e6d4', '#eee6a8', '#f6c8b0', '#f0b4c4'],
-      ['#f0b0a8', '#f6c8a8', '#f0e4a8', '#d0dcb4', '#c4e6d4'],
-      ['#f0b0c4', '#d8bce8', '#c4d4f4', '#c8e6d8', '#f8f2ea'],
-      ['#d8b0cc', '#c4c8ee', '#b8e0d4', '#ead8a8', '#f4c8c4'],
-      ['#c8b4e0', '#f0b8cc', '#f6d0b4', '#f0e6b0', '#d4e0c0'],
-      ['#c8e2f4', '#d4c8ee', '#f6c8d8', '#f6c8a8', '#ead8c0'],
-      ['#d8e6a4', '#c4e6cc', '#c0d8f4', '#d0c4ee', '#f0c0cc'],
-      ['#e8b8a8', '#ead4bc', '#d8c4e8', '#c8d0f2', '#d4e8f4'],
-      ['#e8b0c0', '#dcb4d0', '#f0e4b0', '#d4e6b8', '#c4d8f2'],
-      ['#b8e0d8', '#eee8b0', '#f6d0b8', '#d8c4ec', '#eee8f6'],
-      ['#c8c4e6', '#f0b8c8', '#f4c8a8', '#f6eee0', '#d4e0c4'],
-      ['#f4b4bc', '#f0d8a4', '#c8e4cc', '#c4cef0', '#dcc8ea'],
-      ['#e8c0b4', '#ead4a4', '#c8daf2', '#c4e4d8', '#dcc8e8'],
-      ['#dcb8e0', '#f0e6b4', '#f4c0b4', '#c8e6d4', '#d4e8f4'],
-      ['#d0dcb8', '#ead8bc', '#f4c8cc', '#c8d0ee', '#f6f2ea'],
-      ['#f4c8a4', '#f0b8c4', '#d8c0ea', '#c4d6f4', '#c8e6d6']
+      ['#f0a090', '#f6c4a4', '#f0b0c0', '#f6d8b0', '#f8e4d4'],
+      ['#8ec8ee', '#b4c4f2', '#c8b8ea', '#a8dce8', '#dceaf6'],
+      ['#c9a0e4', '#e4b0cc', '#b8b4ee', '#f0c4d4', '#e8d8f4'],
+      ['#e8c86a', '#f2b888', '#f6d8a4', '#f0c4b0', '#f8e8c4'],
+      ['#7ecfb0', '#efe6a4', '#9ed48a', '#7ecfc4', '#d8ecc0'],
+      ['#f09ab4', '#f6c0a8', '#e4b4d4', '#f8d4b8', '#f6dce6'],
+      ['#8eb0ee', '#a8d4f0', '#b8e0c8', '#c4b8ee', '#d4e4f6'],
+      ['#f0b07a', '#f6d08a', '#f4b8a4', '#f8d4b4', '#fbe6c8'],
+      ['#6ec4c8', '#a8dcc0', '#efe4a0', '#8ec8e4', '#d4eee4'],
+      ['#e4d45e', '#f0c888', '#d8e0a0', '#f4c8b0', '#f6ecc0'],
+      ['#e090c8', '#f0b4c4', '#d4b0e4', '#f4c8b0', '#f6dcec'],
+      ['#9cbc6e', '#e4d88a', '#8ecfa8', '#c8dca0', '#e8f0c4'],
+      ['#f4a898', '#f8c8b0', '#f0b4c8', '#f6d4a4', '#fbe0d0'],
+      ['#7eb6e4', '#a8c8f0', '#b4ddd4', '#c8b8e8', '#d4e6f6'],
+      ['#b49ae0', '#d8b4e4', '#f0c0d4', '#c4c8f0', '#e6daf4'],
+      ['#d8d06a', '#e8c888', '#c8dca0', '#f0d0b4', '#f4ecc4'],
+      ['#ee8ea8', '#f4c0b0', '#e4b0d0', '#f6d4a8', '#f8dce4'],
+      ['#5ec0c4', '#8ed4c0', '#efe2a4', '#8ec4e0', '#c8ebe4'],
+      ['#d898b4', '#e8c0c8', '#c8b4dc', '#f0d0b4', '#f4e0e4'],
+      ['#a8c878', '#e6d890', '#8ecfb4', '#d4e0a8', '#e4f0c8'],
+      ['#f2b07a', '#f6d090', '#f4b8b0', '#f8d4b8', '#fbe8cc'],
+      ['#a898e0', '#c8b4e8', '#f0c0d8', '#b8c4f0', '#e4daf6'],
+      ['#e8a0b0', '#f0c4b4', '#e4c0d4', '#f6d8a8', '#f8e0d4'],
+      ['#78c0d4', '#a4d8c8', '#efe4a8', '#9ec4e4', '#d4eef0']
     ];
+    function paletteIndexFor(index) {
+      return (index * 7) % PALETTES.length;
+    }
 
     function resample(points) {
       const lengths = points.map((p, i) => {
@@ -460,7 +609,7 @@ vec3 articulateSea(vec3 original){
       const texture = new T.CanvasTexture(canvas);
       texture.colorSpace = T.SRGBColorSpace;
       texture.generateMipmaps = false;
-      return {ctx, texture, palette: PALETTES[index % PALETTES.length], field: null, drawn: -1, prev: null, drops: 0, seeded: 0, root: null, path: [], habits: []};
+      return {ctx, texture, palette: PALETTES[paletteIndexFor(index)], field: null, drawn: -1, prev: null, drops: 0, seeded: 0, root: null, path: [], habits: []};
     }
 
     const blankCanvas = document.createElement('canvas');
@@ -565,6 +714,7 @@ vec3 articulateSea(vec3 original){
     }
 
     function drawInk(ink) {
+      const slim = ink.kind === 'whale' ? 0.28 : 1;
       const ctx = ink.ctx;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalCompositeOperation = 'source-over';
@@ -595,7 +745,7 @@ vec3 articulateSea(vec3 original){
           if (toward) wakeColour.lerp(wakeEdge.set(toward), 0.45);
           deepenInk(wakeColour, 0.28);
           ctx.globalCompositeOperation = 'source-over';
-          ctx.globalAlpha = 0.42;
+          ctx.globalAlpha = ink.kind === 'whale' ? 0.24 : 0.42;
           ctx.fillStyle = '#' + wakeColour.getHexString();
           ctx.fill();
         }
@@ -610,15 +760,17 @@ vec3 articulateSea(vec3 original){
           const swell = 0.5 + 0.5 * Math.sin(along * Math.PI * 1.65 + regionIndex * 0.9);
           const flutter = 0.5 + 0.5 * Math.sin(along * Math.PI * 5.4 + regionIndex * 1.7);
           const breadth = swell * 0.7 + flutter * 0.3;
-          wakeColour.set(from);
-          if (toward) wakeColour.lerp(wakeEdge.set(toward), swell * 0.7);
+          const fromStop = stops[i % stops.length];
+          const towardStop = stops[(i + 2) % stops.length];
+          wakeColour.set(fromStop);
+          wakeColour.lerp(wakeEdge.set(towardStop), 0.28 + swell * 0.55);
           deepenInk(wakeColour, 0.62);
           ctx.beginPath();
           ctx.moveTo((p.x + q.x) / 2, (p.y + q.y) / 2);
           ctx.quadraticCurveTo(q.x, q.y, (q.x + r.x) / 2, (q.y + r.y) / 2);
           ctx.strokeStyle = '#' + wakeColour.getHexString();
           ctx.globalAlpha = 1;
-          ctx.lineWidth = 0.8 + voice * 1.5 + breadth * (2.1 + voice * 6.8);
+          ctx.lineWidth = (0.8 + voice * 1.5 + breadth * (2.1 + voice * 6.8)) * slim;
           ctx.stroke();
         }
       });
@@ -639,7 +791,7 @@ vec3 articulateSea(vec3 original){
             ctx.lineTo(b.x * 256, b.y * 256);
             ctx.strokeStyle = '#' + wakeColour.getHexString();
             ctx.globalAlpha = 1;
-            ctx.lineWidth = 0.9 + voice * 1.2 + swell * (1.8 + voice * 5.4);
+            ctx.lineWidth = (0.9 + voice * 1.2 + swell * (1.8 + voice * 5.4)) * slim;
             ctx.stroke();
           }
         }
@@ -692,9 +844,10 @@ vec3 articulateSea(vec3 original){
           bw /= max(0.001, bw.x + bw.y + bw.z);
           vec3 pearlPos = vPearlLocal;
           pearlPos.x *= dyeFlip;
-          vec2 noseUv = dyeFlip < 0.0 ? pearlPos.yz : pearlPos.zy;
-          vec2 backUv = dyeFlip < 0.0 ? vec2(pearlPos.z, pearlPos.x) : pearlPos.xz;
-          vec2 flankUv = dyeFlip < 0.0 ? vec2(pearlPos.y, pearlPos.x) : pearlPos.xy;
+          float bodyAlong = dyeFlip < 0.0 ? pearlPos.x * 0.3 : pearlPos.x;
+          vec2 noseUv = dyeFlip < 0.0 ? vec2(bodyAlong, pearlPos.z) : pearlPos.zy;
+          vec2 backUv = dyeFlip < 0.0 ? vec2(pearlPos.z, bodyAlong) : pearlPos.xz;
+          vec2 flankUv = dyeFlip < 0.0 ? vec2(pearlPos.y, bodyAlong) : pearlPos.xy;
           pearlPigment = texture2D(patternMap, clamp(noseUv * vec2(0.82, 0.95) + 0.5, vec2(0.02), vec2(0.98))) * bw.x;
           pearlPigment += texture2D(patternMap, clamp(backUv * vec2(0.82, 0.9) + 0.5, vec2(0.02), vec2(0.98))) * bw.y;
           pearlPigment += texture2D(patternMap, clamp(flankUv * vec2(0.82, 1.0) + 0.5, vec2(0.02), vec2(0.98))) * bw.z;
@@ -721,7 +874,7 @@ vec3 articulateSea(vec3 original){
           vec3 inkGlow = pearlPigment.rgb;
           totalEmissiveRadiance += inkGlow * clamp(pearlPigment.a, 0.0, 1.0) * bodyDyed * 1.05;`);
       };
-      material.customProgramCacheKey = () => 'ending-spine-v21-' + kind + (fin ? '-fin' : '');
+      material.customProgramCacheKey = () => 'ending-spine-v22-' + kind + (fin ? '-fin' : '');
       return material;
     }
 
@@ -835,6 +988,7 @@ vec3 articulateSea(vec3 original){
         offset: new T.Vector3(Math.cos(slotAngle) * 1.45, (slot - 1) * 0.22, Math.sin(slotAngle) * 1.05),
         state: 'school', cooldown: 0, meet: 0, placed: false, dyed: 0,
         dye: pearl.clone(), dyeB: pearl.clone(), dyeC: pearl.clone(), dyeD: pearl.clone(),
+        bubbleFrom: rootFish.position.clone(),
         bulk: kind === 'jelly' ? size * 1.15 : size,
         pen: {x: 128, y: 128}, penWorld: new T.Vector3(), penReady: false
       });
@@ -931,6 +1085,7 @@ vec3 articulateSea(vec3 original){
     function paintPattern(fish, px, py, pz) {
       if (!fish.ink) {
         fish.ink = makeInk(fish.index);
+        fish.ink.kind = fish.kind;
         fish.patternSlot.value = fish.ink.texture;
       }
       const ink = fish.ink;
@@ -985,7 +1140,7 @@ vec3 articulateSea(vec3 original){
         x: T.MathUtils.clamp((meshX * 1.05 + 0.5) * 256, 24, 232),
         y: T.MathUtils.clamp((1 - (meshY * 1.25 + 0.5)) * 256, 24, 232)
       };
-      if (Math.hypot(next.x - ink.prev.x, next.y - ink.prev.y) > 52) {
+      if (Math.hypot(next.x - ink.prev.x, next.y - ink.prev.y) > 150) {
         fish.pen.x = next.x;
         fish.pen.y = next.y;
         ink.prev = next;
@@ -1152,17 +1307,33 @@ vec3 articulateSea(vec3 original){
       wakeMesh.visible = index > 0;
     }
 
+    function rememberPalette(index) {
+      const id = paletteIndexFor(index);
+      const at = recentPalettes.indexOf(id);
+      if (at >= 0) recentPalettes.splice(at, 1);
+      recentPalettes.push(id);
+      while (recentPalettes.length > 3) recentPalettes.shift();
+    }
+
     function choose(time, bodyX, bodyZ) {
+      const banned = new Set(recentPalettes);
+      const latest = recentPalettes[recentPalettes.length - 1];
       let best = null;
       let bestD = Infinity;
+      let spare = null;
+      let spareD = Infinity;
       for (const fish of fishes) {
         if (fish.state !== 'school' || fish.cooldown > time || fish.species === lastSpecies) continue;
         const d = (fish.position.x - bodyX) ** 2 + (fish.position.z - bodyZ) ** 2;
-        if (d < bestD) { bestD = d; best = fish; }
+        const id = paletteIndexFor(fish.index);
+        if (!banned.has(id)) {
+          if (d < bestD) { bestD = d; best = fish; }
+        } else if (id !== latest && d < spareD) { spareD = d; spare = fish; }
       }
       if (best) return best;
+      if (spare) return spare;
       for (const fish of fishes) {
-        if (fish.state === 'school' && fish.cooldown <= time) return fish;
+        if (fish.state === 'school' && fish.cooldown <= time && paletteIndexFor(fish.index) !== latest) return fish;
       }
       return null;
     }
@@ -1226,6 +1397,10 @@ vec3 articulateSea(vec3 original){
       prevX = lx;
       prevZ = lz;
       prevY = bodyY;
+      if (!rideReady) { rideY = bodyY; rideReady = true; }
+      const upward = dt > 0 ? Math.max(0, bodyY - rideY) / dt : 0;
+      const aloft = bodyY > rideY + 0.45;
+      if (upward < 3.2 && !aloft) rideY += (bodyY - rideY) * (1 - Math.exp(-dt * 3.5));
       const hop = Math.hypot(moveX, moveZ);
       const dist = Math.hypot(lx, lz - lakeZ);
       const inside = 1 - T.MathUtils.smoothstep(dist, lakeR * 0.55, lakeR + 1.5);
@@ -1262,11 +1437,13 @@ vec3 articulateSea(vec3 original){
           visitor = null;
         }
         for (const fish of fishes) fish.object.visible = false;
-        waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * 0.12);
+        const shore = dist < lakeR + 10;
+        waterMood.amount.value = Math.max(0, waterMood.amount.value - dt * (shore ? 0.015 : 0.09));
         waterMood.color.value.lerp(moodTarget, 1 - Math.exp(-dt * 1.6));
         waterMood.colorB.value.lerp(moodTargetB, 1 - Math.exp(-dt * 1.6));
         waterMood.colorC.value.lerp(moodTargetC, 1 - Math.exp(-dt * 1.6));
         drawWake(time);
+        stepBubbles(dt);
         return;
       }
       for (const school of schoolGroups) {
@@ -1291,6 +1468,7 @@ vec3 articulateSea(vec3 original){
           pick.state = 'approach';
           pick.meet = 0;
           dwell = 0;
+          rememberPalette(pick.index);
         }
       }
       let washColour = null;
@@ -1301,7 +1479,7 @@ vec3 articulateSea(vec3 original){
         if (touching) {
           if (fish.state === 'near') fish.meet += dt;
           paintPattern(fish, lx, bodyY, lz);
-          const wash = fish.ink ? fish.ink.palette : PALETTES[fish.index % PALETTES.length];
+          const wash = fish.ink ? fish.ink.palette : PALETTES[paletteIndexFor(fish.index)];
           washColour = wash[0];
           dyeColour.set(wash[0]);
           dyeColourB.set(wash[1]);
@@ -1325,12 +1503,14 @@ vec3 articulateSea(vec3 original){
         if (glide && fish === visitor && fish.state !== 'return') {
           fish.position.x += moveX;
           fish.position.z += moveZ;
-          if (lift || fish.state === 'near' || fish.state === 'approach') fish.position.y += moveY;
+          if ((lift || fish.state === 'near' || fish.state === 'approach') && upward < 3.2 && !aloft) fish.position.y += moveY;
         }
-        if (fish === visitor && fish.state !== 'return') {
+        if (fish === visitor && fish.state === 'near') {
           const spin = time * 1.7 + fish.phase;
-          const orbit = fish.state === 'near' ? 1.28 : 0.9;
-          goal.set(lx + Math.cos(spin) * orbit, Math.min(waterLevel - 0.42, bodyY + 0.08 + Math.sin(spin * 2) * 0.16), lz + Math.sin(spin) * orbit);
+          goal.set(lx + Math.cos(spin) * 1.28, Math.min(waterLevel - 0.42, rideY + 0.08 + Math.sin(spin * 2) * 0.16), lz + Math.sin(spin) * 1.28);
+          clampLake(fish.bulk);
+        } else if (fish === visitor && fish.state === 'approach') {
+          goal.set(lx + Math.cos(fish.phase) * 1.05, Math.min(waterLevel - 0.42, rideY + 0.08), lz + Math.sin(fish.phase) * 1.05);
           clampLake(fish.bulk);
         } else {
           schoolGoal(time, fish, lx, lz);
@@ -1373,7 +1553,7 @@ vec3 articulateSea(vec3 original){
           aim.setFromUnitVectors(forward, heading);
           fish.object.quaternion.slerp(aim, 1 - Math.exp(-dt * (circling ? 8 : 1.1)));
         }
-        if (fish.state === 'approach' && length < 0.7) fish.state = 'near';
+        if (fish.state === 'approach' && beside < 1.8) fish.state = 'near';
         if (fish.state === 'return' && length < 1.1) fish.state = 'school';
         const fade = T.MathUtils.smoothstep(reveal, 0.02, 0.8);
         for (const material of fish.materials) {
@@ -1389,6 +1569,11 @@ vec3 articulateSea(vec3 original){
           material.envMapIntensity = 0.1 * (1 - fish.dyed * 0.45);
         }
         fish.object.visible = fade > 0.03;
+        if (fish.object.visible && fish.position.y < waterLevel - 0.12 && fish.bubbleFrom.y < waterLevel - 0.05) {
+          bubbleColour.setRGB(0.86, 0.95, 1).lerp(fish.dye, 0.2 + fish.dyed * 0.55);
+          trailBubbles(fish.index, fish.bubbleFrom.x, fish.bubbleFrom.y, fish.bubbleFrom.z, fish.position.x, fish.position.y, fish.position.z, dt, bubbleColour);
+        }
+        fish.bubbleFrom.copy(fish.position);
       }
       if (washColour) {
         moodTarget.set(washColour);
@@ -1400,7 +1585,12 @@ vec3 articulateSea(vec3 original){
       waterMood.color.value.lerp(moodTarget, 1 - Math.exp(-dt * 1.6));
       waterMood.colorB.value.lerp(moodTargetB, 1 - Math.exp(-dt * 1.6));
       waterMood.colorC.value.lerp(moodTargetC, 1 - Math.exp(-dt * 1.6));
+      if (bodyY < waterLevel - 0.12 && bodyY - moveY < waterLevel - 0.05) {
+        bubbleColour.setRGB(0.86, 0.95, 1).lerp(waterMood.color.value, Math.min(0.72, 0.28 + waterMood.amount.value * 0.45));
+        trailBubbles('player', lx - moveX, bodyY - moveY, lz - moveZ, lx, bodyY, lz, dt, bubbleColour);
+      }
       drawWake(time);
+      stepBubbles(dt);
     }
 
     return {update, shafts};
